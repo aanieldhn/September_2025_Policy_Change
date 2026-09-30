@@ -1,0 +1,4578 @@
+---
+title: "Weekly Incidence: Allocation Pathways and Device Listings"
+output:
+  html_document:
+    self_contained: true
+    toc: true
+    toc_float: true
+date: "`r Sys.Date()`"
+---
+
+
+```{r setup, message=FALSE, warning=FALSE}
+library(haven)
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(tibble)
+library(ggplot2)
+library(cowplot)
+library(lubridate)
+library(gtsummary)
+library(forcats)
+
+
+policy_date <- as.Date("2025-09-17")
+
+pre_start  <- as.Date("2024-09-17")
+pre_end    <- as.Date("2025-06-30")
+
+post_start <- as.Date("2025-09-17")
+post_end   <- as.Date("2026-06-30")
+```
+
+---
+
+# Load data
+
+```{r load-data}
+
+thoracic_wlhistory_data <- read_sas(
+  "~/Desktop/R Project Data/2026 Q2 STAR/thoracic_wlhistory_data.sas7bdat",
+  NULL
+)
+
+thoracic_data <- read_sas(
+  "~/Desktop/R Project Data/2026 Q2 STAR/thoracic_data.sas7bdat",
+  NULL
+)
+
+thoracic_stat1 <- read_sas(
+  "~/Desktop/R Project Data/2026 Q2 STAR/thoracic_stat1.sas7bdat",
+  NULL
+)
+
+thoracic_stat2 <- read_sas(
+  "~/Desktop/R Project Data/2026 Q2 STAR/thoracic_stat2.sas7bdat",
+  NULL
+)
+
+thoracic_stat3 <- read_sas(
+  "~/Desktop/R Project Data/2026 Q2 STAR/thoracic_stat3.sas7bdat",
+  NULL
+)
+
+thoracic_stat4 <- read_sas(
+  "~/Desktop/R Project Data/2026 Q2 STAR/thoracic_stat4.sas7bdat",
+  NULL
+)
+
+thoracic_mcs_device <- read_sas(
+  "~/Desktop/R Project Data/2026 Q2 STAR/thoracic_mcs_device.sas7bdat",
+  NULL
+)
+```
+
+---
+
+# Study cohort construction
+
+```{r study-cohort-construction}
+
+study <- thoracic_data %>%
+  mutate(
+    INIT_DATE = as.Date(INIT_DATE),
+    END_DATE = as.Date(END_DATE)
+  ) %>%
+  filter(
+    WL_ORG == "HR",
+    INIT_AGE >= 18,
+    (INIT_DATE >= pre_start & INIT_DATE <= pre_end) |
+      (INIT_DATE >= post_start & INIT_DATE <= post_end)
+  ) %>%
+  mutate(
+    policy_group = case_when(
+      INIT_DATE >= pre_start & INIT_DATE <= pre_end ~ "Pre",
+      INIT_DATE >= post_start & INIT_DATE <= post_end ~ "Post",
+      TRUE ~ NA_character_
+    ),
+
+    policy_group = factor(
+      policy_group,
+      levels = c("Pre", "Post")
+    )
+  )
+
+
+study %>%
+  count(policy_group)
+
+
+study %>%
+  summarise(
+    n = n(),
+    min_listing_date = min(INIT_DATE, na.rm = TRUE),
+    max_listing_date = max(INIT_DATE, na.rm = TRUE)
+  )
+
+
+study %>%
+  count(
+    policy_group,
+    INIT_STAT
+  ) %>%
+  arrange(
+    policy_group,
+    INIT_STAT
+  ) %>%
+  print(
+    n = Inf
+  )
+```
+
+---
+
+# Administrative form exclusions
+
+```{r administrative-form-exclusions}
+
+invalid_form_statuses <- c(
+  "Not Required - Withdrawn",
+  "Not Required - Listing Error",
+  "Not Required - Other"
+)
+```
+
+---
+
+# Initial Status 2 pathways
+
+```{r initial-status2-pathways}
+
+initial_status2_flags <- thoracic_stat2 %>%
+  mutate(
+    FORMEFFECTIVEDT = as.Date(FORMEFFECTIVEDT),
+    UNOS_CAND_STAT_DT = as.Date(UNOS_CAND_STAT_DT),
+
+    standard_status2_iabp =
+      (EXCEPTION %in% 0) &
+      (CRITERIAIABPSUPPORT %in% 1),
+
+    standard_status2_pevad =
+      (EXCEPTION %in% 0) &
+      (CRITERIAMCSDENDOVASSUPP %in% 1),
+
+    standard_status2_iabp_pevad =
+      standard_status2_iabp |
+      standard_status2_pevad,
+
+    status2_exception =
+      EXCEPTION %in% 1
+  ) %>%
+  filter(
+    !FORMSTATUS %in% invalid_form_statuses
+  ) %>%
+  inner_join(
+    study %>%
+      select(
+        WL_ID_CODE,
+        INIT_DATE,
+        INIT_STAT,
+        policy_group
+      ),
+    by = "WL_ID_CODE"
+  ) %>%
+  filter(
+    INIT_STAT == 2120,
+    UNOS_CAND_STAT_CD == 2120,
+    FORMEFFECTIVEDT == INIT_DATE
+  ) %>%
+  group_by(
+    WL_ID_CODE,
+    INIT_DATE,
+    policy_group
+  ) %>%
+  summarise(
+    standard_status2_iabp =
+      any(standard_status2_iabp, na.rm = TRUE),
+
+    standard_status2_pevad =
+      any(standard_status2_pevad, na.rm = TRUE),
+
+    standard_status2_iabp_pevad =
+      any(standard_status2_iabp_pevad, na.rm = TRUE),
+
+    status2_exception =
+      any(status2_exception, na.rm = TRUE),
+
+    .groups = "drop"
+  )
+
+
+initial_status2_flags %>%
+  group_by(policy_group) %>%
+  summarise(
+    n_matched = n(),
+
+    n_standard_iabp =
+      sum(standard_status2_iabp),
+
+    n_standard_pevad =
+      sum(standard_status2_pevad),
+
+    n_standard_iabp_pevad =
+      sum(standard_status2_iabp_pevad),
+
+    n_exception =
+      sum(status2_exception),
+
+    .groups = "drop"
+  ) %>%
+  print(
+    width = Inf
+  )
+```
+
+---
+
+# Initial Status 3 high-dose inotrope pathway
+
+```{r initial-status3-pathway}
+
+initial_status3_flags <- thoracic_stat3 %>%
+  mutate(
+    FORMEFFECTIVEDT = as.Date(FORMEFFECTIVEDT),
+    UNOS_CAND_STAT_DT = as.Date(UNOS_CAND_STAT_DT),
+
+    standard_status3_hd_inotrope =
+      (EXCEPTION %in% 0) &
+      (CRITERIAINOTROPESUPPORT %in% 1),
+
+    status3_exception =
+      EXCEPTION %in% 1
+  ) %>%
+  filter(
+    !FORMSTATUS %in% invalid_form_statuses
+  ) %>%
+  inner_join(
+    study %>%
+      select(
+        WL_ID_CODE,
+        INIT_DATE,
+        INIT_STAT,
+        policy_group
+      ),
+    by = "WL_ID_CODE"
+  ) %>%
+  filter(
+    INIT_STAT == 2130,
+    UNOS_CAND_STAT_CD == 2130,
+    FORMEFFECTIVEDT == INIT_DATE
+  ) %>%
+  group_by(
+    WL_ID_CODE,
+    INIT_DATE,
+    policy_group
+  ) %>%
+  summarise(
+    standard_status3_hd_inotrope =
+      any(standard_status3_hd_inotrope, na.rm = TRUE),
+
+    status3_exception =
+      any(status3_exception, na.rm = TRUE),
+
+    .groups = "drop"
+  )
+
+
+initial_status3_flags %>%
+  group_by(policy_group) %>%
+  summarise(
+    n_matched = n(),
+
+    n_standard_hd_inotrope =
+      sum(standard_status3_hd_inotrope),
+
+    n_status3_exception =
+      sum(status3_exception),
+
+    .groups = "drop"
+  ) %>%
+  print(
+    width = Inf
+  )
+```
+
+---
+
+# Initial Status 1 ECMO and exception pathways
+
+```{r initial-status1-pathways}
+
+initial_status1_flags <- thoracic_stat1 %>%
+  mutate(
+    FORMEFFECTIVEDT = as.Date(FORMEFFECTIVEDT),
+    UNOS_CAND_STAT_DT = as.Date(UNOS_CAND_STAT_DT),
+
+    standard_status1_ecmo =
+      (EXCEPTION %in% 0) &
+      (CRITERIAECMOSUPPORT %in% 1),
+
+    status1_exception =
+      EXCEPTION %in% 1
+  ) %>%
+  filter(
+    !FORMSTATUS %in% invalid_form_statuses
+  ) %>%
+  inner_join(
+    study %>%
+      select(
+        WL_ID_CODE,
+        INIT_DATE,
+        INIT_STAT,
+        policy_group
+      ),
+    by = "WL_ID_CODE"
+  ) %>%
+  filter(
+    INIT_STAT == 2110,
+    UNOS_CAND_STAT_CD == 2110,
+    FORMEFFECTIVEDT == INIT_DATE
+  ) %>%
+  group_by(
+    WL_ID_CODE,
+    INIT_DATE,
+    policy_group
+  ) %>%
+  summarise(
+    standard_status1_ecmo =
+      any(standard_status1_ecmo, na.rm = TRUE),
+
+    status1_exception =
+      any(status1_exception, na.rm = TRUE),
+
+    .groups = "drop"
+  )
+
+
+initial_status1_flags %>%
+  group_by(policy_group) %>%
+  summarise(
+    n_matched = n(),
+
+    n_status1_ecmo =
+      sum(standard_status1_ecmo),
+
+    n_status1_exception =
+      sum(status1_exception),
+
+    .groups = "drop"
+  ) %>%
+  print(
+    width = Inf
+  )
+```
+
+``` {r identifying tMCS at initial listing}
+# ============================================================
+# Actual IABP, left-sided PEVAD, and VA-ECMO support
+# at initial listing
+# ============================================================
+
+# ------------------------------------------------------------
+# Standalone thoracic MCS device file
+#
+# IABP:
+#   DEVICE_TYPE == "IABP"
+#
+# PEVAD:
+#   DEVICE_TYPE == "Percutaneous Device"
+#   AND VENTRICULAR_SUPPORT == "Left"
+#
+# VA-ECMO:
+#   DEVICE_TYPE == "VA ECMO"
+# ------------------------------------------------------------
+
+mcs_device_at_listing <- thoracic_mcs_device %>%
+  mutate(
+    IMPLANT_DATE = as.Date(IMPLANT_DATE),
+    EXPLANT_DATE = as.Date(EXPLANT_DATE)
+  ) %>%
+  inner_join(
+    study %>%
+      select(
+        WL_ID_CODE,
+        INIT_DATE
+      ),
+    by = "WL_ID_CODE"
+  ) %>%
+  filter(
+    (
+      DEVICE_TYPE == "IABP" |
+        (
+          DEVICE_TYPE == "Percutaneous Device" &
+            VENTRICULAR_SUPPORT == "Left"
+        ) |
+        DEVICE_TYPE == "VA ECMO"
+    ),
+    IMPLANT_DATE <= INIT_DATE,
+    is.na(EXPLANT_DATE) |
+      EXPLANT_DATE >= INIT_DATE
+  ) %>%
+  group_by(
+    WL_ID_CODE,
+    INIT_DATE
+  ) %>%
+  summarise(
+    iabp_mcs_file =
+      any(
+        DEVICE_TYPE == "IABP",
+        na.rm = TRUE
+      ),
+
+    pevad_mcs_file =
+      any(
+        DEVICE_TYPE == "Percutaneous Device" &
+          VENTRICULAR_SUPPORT == "Left",
+        na.rm = TRUE
+      ),
+
+    va_ecmo_mcs_file =
+      any(
+        DEVICE_TYPE == "VA ECMO",
+        na.rm = TRUE
+      ),
+
+    .groups = "drop"
+  )
+
+
+# ------------------------------------------------------------
+# Status-form device information
+#
+# Device type IDs:
+# 8  = IABP
+# 11 = Percutaneous Device
+#
+# NOTE:
+# We retain the existing status-form PEVAD ascertainment here.
+# We should separately verify the coding of
+# PRIM_VENTRICULARSUPPORTID and SEC_VENTRICULARSUPPORTID
+# before imposing a left-sided restriction on these fields.
+# ------------------------------------------------------------
+
+status_device_data <- bind_rows(
+
+  thoracic_stat1 %>%
+    select(
+      WL_ID_CODE,
+      FORMEFFECTIVEDT,
+      FORMSTATUS,
+      PRIM_DEVICETYPEID,
+      PRIM_IMPLANTDT,
+      SEC_DEVICETYPEID,
+      SEC_IMPLANTDT
+    ),
+
+  thoracic_stat2 %>%
+    select(
+      WL_ID_CODE,
+      FORMEFFECTIVEDT,
+      FORMSTATUS,
+      PRIM_DEVICETYPEID,
+      PRIM_IMPLANTDT,
+      SEC_DEVICETYPEID,
+      SEC_IMPLANTDT
+    ),
+
+  thoracic_stat3 %>%
+    select(
+      WL_ID_CODE,
+      FORMEFFECTIVEDT,
+      FORMSTATUS,
+      PRIM_DEVICETYPEID,
+      PRIM_IMPLANTDT,
+      SEC_DEVICETYPEID,
+      SEC_IMPLANTDT
+    ),
+
+  thoracic_stat4 %>%
+    select(
+      WL_ID_CODE,
+      FORMEFFECTIVEDT,
+      FORMSTATUS,
+      PRIM_DEVICETYPEID,
+      PRIM_IMPLANTDT,
+      SEC_DEVICETYPEID,
+      SEC_IMPLANTDT
+    )
+) %>%
+  mutate(
+    FORMEFFECTIVEDT = as.Date(FORMEFFECTIVEDT),
+    PRIM_IMPLANTDT = as.Date(PRIM_IMPLANTDT),
+    SEC_IMPLANTDT = as.Date(SEC_IMPLANTDT)
+  ) %>%
+  filter(
+    !FORMSTATUS %in% invalid_form_statuses
+  ) %>%
+  inner_join(
+    study %>%
+      select(
+        WL_ID_CODE,
+        INIT_DATE
+      ),
+    by = "WL_ID_CODE"
+  ) %>%
+  filter(
+    FORMEFFECTIVEDT == INIT_DATE
+  ) %>%
+  mutate(
+    prim_iabp =
+      PRIM_DEVICETYPEID == 8 &
+      !is.na(PRIM_IMPLANTDT) &
+      PRIM_IMPLANTDT <= INIT_DATE,
+
+    sec_iabp =
+      SEC_DEVICETYPEID == 8 &
+      !is.na(SEC_IMPLANTDT) &
+      SEC_IMPLANTDT <= INIT_DATE,
+
+    prim_pevad =
+      PRIM_DEVICETYPEID == 11 &
+      !is.na(PRIM_IMPLANTDT) &
+      PRIM_IMPLANTDT <= INIT_DATE,
+
+    sec_pevad =
+      SEC_DEVICETYPEID == 11 &
+      !is.na(SEC_IMPLANTDT) &
+      SEC_IMPLANTDT <= INIT_DATE
+  ) %>%
+  group_by(
+    WL_ID_CODE,
+    INIT_DATE
+  ) %>%
+  summarise(
+    iabp_status_form =
+      any(
+        prim_iabp |
+          sec_iabp,
+        na.rm = TRUE
+      ),
+
+    pevad_status_form =
+      any(
+        prim_pevad |
+          sec_pevad,
+        na.rm = TRUE
+      ),
+
+    .groups = "drop"
+  )
+
+
+# ------------------------------------------------------------
+# Combine standalone MCS and status-form device sources
+# ------------------------------------------------------------
+
+device_at_listing <- study %>%
+  select(
+    WL_ID_CODE,
+    INIT_DATE,
+    policy_group
+  ) %>%
+  left_join(
+    mcs_device_at_listing,
+    by = c(
+      "WL_ID_CODE",
+      "INIT_DATE"
+    )
+  ) %>%
+  left_join(
+    status_device_data,
+    by = c(
+      "WL_ID_CODE",
+      "INIT_DATE"
+    )
+  ) %>%
+  mutate(
+    across(
+      c(
+        iabp_mcs_file,
+        pevad_mcs_file,
+        va_ecmo_mcs_file,
+        iabp_status_form,
+        pevad_status_form
+      ),
+      ~ coalesce(.x, FALSE)
+    ),
+
+    # IABP from either source
+    iabp_at_listing =
+      iabp_mcs_file |
+      iabp_status_form,
+
+    # PEVAD from either source
+    pevad_at_listing =
+      pevad_mcs_file |
+      pevad_status_form,
+
+    # VA-ECMO from standalone MCS device file
+    va_ecmo_at_listing =
+      va_ecmo_mcs_file,
+
+    # Preserve this outcome specifically for the Status 2
+    # IABP/PEVAD policy analysis
+    any_iabp_pevad_at_listing =
+      iabp_at_listing |
+      pevad_at_listing,
+
+    # Broader temporary-MCS outcome
+    any_temporary_mcs_at_listing =
+      iabp_at_listing |
+      pevad_at_listing |
+      va_ecmo_at_listing
+  )
+
+
+# ------------------------------------------------------------
+# Summary by policy era
+# ------------------------------------------------------------
+
+device_at_listing %>%
+  group_by(policy_group) %>%
+  summarise(
+    n = n(),
+
+    n_iabp =
+      sum(iabp_at_listing),
+
+    pct_iabp =
+      100 * mean(iabp_at_listing),
+
+    n_pevad =
+      sum(pevad_at_listing),
+
+    pct_pevad =
+      100 * mean(pevad_at_listing),
+
+    n_va_ecmo =
+      sum(va_ecmo_at_listing),
+
+    pct_va_ecmo =
+      100 * mean(va_ecmo_at_listing),
+
+    n_any_iabp_pevad =
+      sum(any_iabp_pevad_at_listing),
+
+    pct_any_iabp_pevad =
+      100 * mean(any_iabp_pevad_at_listing),
+
+    n_any_temporary_mcs =
+      sum(any_temporary_mcs_at_listing),
+
+    pct_any_temporary_mcs =
+      100 * mean(any_temporary_mcs_at_listing),
+
+    .groups = "drop"
+  ) %>%
+  print(
+    width = Inf
+  )
+  
+```
+
+---
+
+# Construct primary analytic data set
+
+```{r construct-study-analysis}
+
+# Construct primary analytic data set
+
+
+study_analysis <- study %>%
+  mutate(
+    initial_status1 =
+      INIT_STAT == 2110,
+
+    initial_status2 =
+      INIT_STAT == 2120,
+
+    initial_status3 =
+      INIT_STAT == 2130,
+
+    initial_status1_or_2 =
+      INIT_STAT %in% c(
+        2110,
+        2120
+      )
+  ) %>%
+
+  left_join(
+    initial_status1_flags %>%
+      select(
+        WL_ID_CODE,
+        INIT_DATE,
+        standard_status1_ecmo,
+        status1_exception
+      ),
+    by = c(
+      "WL_ID_CODE",
+      "INIT_DATE"
+    )
+  ) %>%
+
+  left_join(
+    initial_status2_flags %>%
+      select(
+        WL_ID_CODE,
+        INIT_DATE,
+        standard_status2_iabp,
+        standard_status2_pevad,
+        standard_status2_iabp_pevad,
+        status2_exception
+      ),
+    by = c(
+      "WL_ID_CODE",
+      "INIT_DATE"
+    )
+  ) %>%
+
+  left_join(
+    initial_status3_flags %>%
+      select(
+        WL_ID_CODE,
+        INIT_DATE,
+        standard_status3_hd_inotrope,
+        status3_exception
+      ),
+    by = c(
+      "WL_ID_CODE",
+      "INIT_DATE"
+    )
+  ) %>%
+
+  left_join(
+    device_at_listing %>%
+      select(
+        WL_ID_CODE,
+        INIT_DATE,
+        iabp_at_listing,
+        pevad_at_listing,
+        va_ecmo_at_listing,
+        any_iabp_pevad_at_listing,
+        any_temporary_mcs_at_listing
+      ),
+    by = c(
+      "WL_ID_CODE",
+      "INIT_DATE"
+    )
+  ) %>%
+
+  mutate(
+    across(
+      c(
+        standard_status1_ecmo,
+        status1_exception,
+        standard_status2_iabp,
+        standard_status2_pevad,
+        standard_status2_iabp_pevad,
+        status2_exception,
+        standard_status3_hd_inotrope,
+        status3_exception,
+        iabp_at_listing,
+        pevad_at_listing,
+        va_ecmo_at_listing,
+        any_iabp_pevad_at_listing,
+        any_temporary_mcs_at_listing
+      ),
+      ~ coalesce(.x, FALSE)
+    ),
+
+    status2_exception_with_iabp_pevad =
+      status2_exception &
+      any_iabp_pevad_at_listing,
+
+    status2_exception_without_iabp_pevad =
+      status2_exception &
+      !any_iabp_pevad_at_listing
+  )
+
+
+```
+
+---
+
+# Primary allocation-pathway results
+
+```{r primary-allocation-results}
+
+
+primary_results <- study_analysis %>%
+  group_by(policy_group) %>%
+  summarise(
+    n = n(),
+
+    n_initial_status1 =
+      sum(initial_status1),
+
+    pct_initial_status1 =
+      100 * mean(initial_status1),
+
+    n_initial_status2 =
+      sum(initial_status2),
+
+    pct_initial_status2 =
+      100 * mean(initial_status2),
+
+    n_initial_status1_or_2 =
+      sum(initial_status1_or_2),
+
+    pct_initial_status1_or_2 =
+      100 * mean(initial_status1_or_2),
+
+    n_status1_ecmo =
+      sum(standard_status1_ecmo),
+
+    pct_status1_ecmo =
+      100 * mean(standard_status1_ecmo),
+
+    n_status1_exception =
+      sum(status1_exception),
+
+    pct_status1_exception =
+      100 * mean(status1_exception),
+
+    n_standard_status2_iabp =
+      sum(standard_status2_iabp),
+
+    pct_standard_status2_iabp =
+      100 * mean(standard_status2_iabp),
+
+    n_standard_status2_pevad =
+      sum(standard_status2_pevad),
+
+    pct_standard_status2_pevad =
+      100 * mean(standard_status2_pevad),
+
+    n_standard_status2_iabp_pevad =
+      sum(standard_status2_iabp_pevad),
+
+    pct_standard_status2_iabp_pevad =
+      100 * mean(standard_status2_iabp_pevad),
+
+    n_status2_exception =
+      sum(status2_exception),
+
+    pct_status2_exception =
+      100 * mean(status2_exception),
+
+    n_status2_exception_with_device =
+      sum(status2_exception_with_iabp_pevad),
+
+    pct_status2_exception_with_device =
+      100 * mean(status2_exception_with_iabp_pevad),
+
+    n_status2_exception_without_device =
+      sum(status2_exception_without_iabp_pevad),
+
+    pct_status2_exception_without_device =
+      100 * mean(status2_exception_without_iabp_pevad),
+
+    n_standard_status3_hd_inotrope =
+      sum(standard_status3_hd_inotrope),
+
+    pct_standard_status3_hd_inotrope =
+      100 * mean(standard_status3_hd_inotrope),
+
+    n_iabp =
+      sum(iabp_at_listing),
+
+    pct_iabp =
+      100 * mean(iabp_at_listing),
+
+    n_pevad =
+      sum(pevad_at_listing),
+
+    pct_pevad =
+      100 * mean(pevad_at_listing),
+
+    n_va_ecmo =
+      sum(va_ecmo_at_listing),
+
+    pct_va_ecmo =
+      100 * mean(va_ecmo_at_listing),
+
+    n_any_iabp_pevad =
+      sum(any_iabp_pevad_at_listing),
+
+    pct_any_iabp_pevad =
+      100 * mean(any_iabp_pevad_at_listing),
+
+    n_any_temporary_mcs =
+      sum(any_temporary_mcs_at_listing),
+
+    pct_any_temporary_mcs =
+      100 * mean(any_temporary_mcs_at_listing),
+
+    .groups = "drop"
+  )
+
+
+print(
+  primary_results,
+  width = Inf
+)
+
+```
+
+---
+
+# Pre/post tests for allocation pathways
+
+```{r allocation-pathway-tests}
+
+allocation_outcomes <- c(
+  "initial_status1",
+  "initial_status2",
+  "initial_status1_or_2",
+
+  "standard_status1_ecmo",
+  "status1_exception",
+
+  "standard_status2_iabp",
+  "standard_status2_pevad",
+  "standard_status2_iabp_pevad",
+  "status2_exception",
+  "status2_exception_with_iabp_pevad",
+  "status2_exception_without_iabp_pevad",
+
+  "standard_status3_hd_inotrope",
+
+  "iabp_at_listing",
+  "pevad_at_listing",
+  "va_ecmo_at_listing",
+  "any_iabp_pevad_at_listing",
+  "any_temporary_mcs_at_listing"
+)
+
+
+allocation_test_results <- map_dfr(
+  allocation_outcomes,
+  function(v) {
+
+    tab <- table(
+      study_analysis$policy_group,
+      study_analysis[[v]]
+    )
+
+    test <- chisq.test(tab)
+
+    n_pre <- sum(
+      study_analysis$policy_group == "Pre" &
+        study_analysis[[v]],
+      na.rm = TRUE
+    )
+
+    n_post <- sum(
+      study_analysis$policy_group == "Post" &
+        study_analysis[[v]],
+      na.rm = TRUE
+    )
+
+    denom_pre <- sum(
+      study_analysis$policy_group == "Pre"
+    )
+
+    denom_post <- sum(
+      study_analysis$policy_group == "Post"
+    )
+
+    tibble(
+      outcome = v,
+
+      n_pre = n_pre,
+      pct_pre = 100 * n_pre / denom_pre,
+
+      n_post = n_post,
+      pct_post = 100 * n_post / denom_post,
+
+      absolute_change_pp =
+        pct_post - pct_pre,
+
+      chi_square =
+        unname(test$statistic),
+
+      p_value =
+        test$p.value
+    )
+  }
+)
+
+
+print(
+  allocation_test_results,
+  n = Inf,
+  width = Inf
+)
+
+```
+
+---
+
+# Initial-listing inotrope data
+
+```{r initial-listing-inotrope-data}
+
+# ============================================================
+# Initial-Listing Inotrope Exposure
+# ============================================================
+
+initial_inotrope_data <- thoracic_wlhistory_data %>%
+  mutate(
+    CHANGEDATE = as.Date(CHANGEDATE)
+  ) %>%
+
+  inner_join(
+    study %>%
+      select(
+        WL_ID_CODE,
+        INIT_DATE,
+        INIT_STAT,
+        policy_group
+      ),
+    by = "WL_ID_CODE"
+  ) %>%
+
+  filter(
+    CHANGEDATE == INIT_DATE,
+    UNOS_CAND_STAT_CD == INIT_STAT
+  ) %>%
+
+  group_by(
+    WL_ID_CODE,
+    INIT_DATE,
+    INIT_STAT,
+    policy_group
+  ) %>%
+
+  summarise(
+    vasoactive_support =
+      case_when(
+        any(
+          CURRTHERVASOACTIVESUPPORT == "Y",
+          na.rm = TRUE
+        ) ~ "Y",
+
+        any(
+          CURRTHERVASOACTIVESUPPORT == "N",
+          na.rm = TRUE
+        ) ~ "N",
+
+        TRUE ~ NA_character_
+      ),
+
+    dobutamine =
+      if (
+        all(is.na(CURRTHERDOBUTAMINE))
+      ) {
+        NA_real_
+      } else {
+        max(
+          CURRTHERDOBUTAMINE,
+          na.rm = TRUE
+        )
+      },
+
+    dopamine =
+      if (
+        all(is.na(CURRTHERDOPAMINE))
+      ) {
+        NA_real_
+      } else {
+        max(
+          CURRTHERDOPAMINE,
+          na.rm = TRUE
+        )
+      },
+
+    milrinone =
+      if (
+        all(is.na(CURRTHERMILRINONE))
+      ) {
+        NA_real_
+      } else {
+        max(
+          CURRTHERMILRINONE,
+          na.rm = TRUE
+        )
+      },
+
+    epinephrine =
+      if (
+        all(is.na(CURRTHEREPINEPHRINE))
+      ) {
+        NA_real_
+      } else {
+        max(
+          CURRTHEREPINEPHRINE,
+          na.rm = TRUE
+        )
+      },
+
+    .groups = "drop"
+  ) %>%
+
+  mutate(
+    # --------------------------------------------------------
+    # Any of the Four Study Inotropes Documented
+    # --------------------------------------------------------
+
+    any_inotrope_documented =
+      coalesce(
+        dobutamine > 0,
+        FALSE
+      ) |
+      coalesce(
+        dopamine > 0,
+        FALSE
+      ) |
+      coalesce(
+        milrinone > 0,
+        FALSE
+      ) |
+      coalesce(
+        epinephrine > 0,
+        FALSE
+      ),
+
+    # --------------------------------------------------------
+    # Single High-Dose Status 3 Thresholds
+    #
+    # Dobutamine >= 7.5 mcg/kg/min
+    # Milrinone >= 0.50 mcg/kg/min
+    # Epinephrine >= 0.02 mcg/kg/min
+    # --------------------------------------------------------
+
+    single_high_dose =
+      coalesce(
+        dobutamine >= 7.5,
+        FALSE
+      ) |
+      coalesce(
+        milrinone >= 0.50,
+        FALSE
+      ) |
+      coalesce(
+        epinephrine >= 0.02,
+        FALSE
+      ),
+
+    # --------------------------------------------------------
+    # Multiple-Inotrope Status 3 Thresholds
+    #
+    # At Least 2 of:
+    # Dobutamine >= 3 mcg/kg/min
+    # Dopamine >= 3 mcg/kg/min
+    # Milrinone >= 0.25 mcg/kg/min
+    # Epinephrine >= 0.01 mcg/kg/min
+    # --------------------------------------------------------
+
+    n_multiple_threshold_drugs =
+      as.integer(
+        coalesce(
+          dobutamine >= 3,
+          FALSE
+        )
+      ) +
+      as.integer(
+        coalesce(
+          dopamine >= 3,
+          FALSE
+        )
+      ) +
+      as.integer(
+        coalesce(
+          milrinone >= 0.25,
+          FALSE
+        )
+      ) +
+      as.integer(
+        coalesce(
+          epinephrine >= 0.01,
+          FALSE
+        )
+      ),
+
+    multiple_inotrope_threshold =
+      n_multiple_threshold_drugs >= 2,
+
+    # --------------------------------------------------------
+    # Meets Either Status 3 Inotrope-Dose Pathway
+    # --------------------------------------------------------
+
+    meets_hd_inotrope_dose =
+      single_high_dose |
+      multiple_inotrope_threshold,
+
+    # --------------------------------------------------------
+    # Mutually Exclusive Inotrope Categories
+    # --------------------------------------------------------
+
+    inotrope_category =
+      case_when(
+        meets_hd_inotrope_dose ~
+          "Meets Status 3 Dose Threshold",
+
+        any_inotrope_documented ~
+          "Inotropes Documented below Status 3 Threshold",
+
+        TRUE ~
+          "No Inotropes Documented"
+      )
+  )
+
+
+```
+
+---
+
+# Add initial-listing inotrope data to analysis
+
+```{r join-inotrope-data}
+
+study_analysis <- study_analysis %>%
+  left_join(
+    initial_inotrope_data %>%
+      select(
+        WL_ID_CODE,
+        INIT_DATE,
+        vasoactive_support,
+        dobutamine,
+        dopamine,
+        milrinone,
+        epinephrine,
+        any_inotrope_documented,
+        single_high_dose,
+        multiple_inotrope_threshold,
+        meets_hd_inotrope_dose,
+        inotrope_category
+      ),
+    by = c(
+      "WL_ID_CODE",
+      "INIT_DATE"
+    )
+  )
+
+```
+
+---
+
+# Inotrope distributions within high-priority pathways
+
+```{r inotrope-distributions-by-pathway}
+
+
+prepost_inotrope_groups <- bind_rows(
+
+  study_analysis %>%
+    filter(
+      standard_status1_ecmo
+    ) %>%
+    mutate(
+      analysis_group =
+        "Status 1 ECMO"
+    ),
+
+  study_analysis %>%
+    filter(
+      status1_exception
+    ) %>%
+    mutate(
+      analysis_group =
+        "Status 1 Exception"
+    ),
+
+  study_analysis %>%
+    filter(
+      status2_exception_with_iabp_pevad
+    ) %>%
+    mutate(
+      analysis_group =
+        "Status 2 Exception with IABP/PEVAD"
+    )
+) %>%
+
+  mutate(
+    analysis_group = factor(
+      analysis_group,
+      levels = c(
+        "Status 1 ECMO",
+        "Status 1 Exception",
+        "Status 2 Exception with IABP/PEVAD"
+      )
+    ),
+
+    inotrope_category = factor(
+      inotrope_category,
+      levels = c(
+        "No Inotropes Documented",
+        "Inotropes Documented below Status 3 Threshold",
+        "Meets Status 3 Dose Threshold"
+      )
+    )
+  )
+
+
+prepost_inotrope_summary <- prepost_inotrope_groups %>%
+  group_by(
+    analysis_group,
+    policy_group
+  ) %>%
+  summarise(
+    n = n(),
+
+    n_any_inotrope =
+      sum(
+        any_inotrope_documented,
+        na.rm = TRUE
+      ),
+
+    pct_any_inotrope =
+      100 * mean(
+        any_inotrope_documented,
+        na.rm = TRUE
+      ),
+
+    n_meets_hd_inotrope_dose =
+      sum(
+        meets_hd_inotrope_dose,
+        na.rm = TRUE
+      ),
+
+    pct_meets_hd_inotrope_dose =
+      100 * mean(
+        meets_hd_inotrope_dose,
+        na.rm = TRUE
+      ),
+
+    .groups = "drop"
+  )
+
+
+print(
+  prepost_inotrope_summary,
+  n = Inf,
+  width = Inf
+)
+
+
+prepost_inotrope_categories <- prepost_inotrope_groups %>%
+  count(
+    analysis_group,
+    policy_group,
+    inotrope_category
+  ) %>%
+  group_by(
+    analysis_group,
+    policy_group
+  ) %>%
+  mutate(
+    pct =
+      100 * n / sum(n)
+  ) %>%
+  ungroup()
+
+
+print(
+  prepost_inotrope_categories,
+  n = Inf,
+  width = Inf
+)
+
+```
+
+
+---
+
+# Primary inotrope hypothesis
+
+The primary hypothesis is whether, after the policy change, a greater proportion of all newly listed candidates entered each high-priority pathway **without meeting Status 3 inotrope-dose criteria**.
+
+Bonferroni correction is applied across the three primary pathway-specific comparisons.
+
+```{r primary-inotrope-hypothesis}
+
+primary_inotrope_test_data <- study_analysis %>%
+  mutate(
+    s1_ecmo_without_status3_inotropes =
+      standard_status1_ecmo &
+      !meets_hd_inotrope_dose,
+
+    s1_exception_without_status3_inotropes =
+      status1_exception &
+      !meets_hd_inotrope_dose,
+
+    s2_exception_device_without_status3_inotropes =
+      status2_exception_with_iabp_pevad &
+      !meets_hd_inotrope_dose
+  )
+
+
+primary_inotrope_outcomes <- c(
+  "s1_ecmo_without_status3_inotropes",
+  "s1_exception_without_status3_inotropes",
+  "s2_exception_device_without_status3_inotropes"
+)
+
+
+primary_inotrope_labels <- c(
+  s1_ecmo_without_status3_inotropes =
+    "Status 1 ECMO - Does Not Meet Status 3 Inotrope Dose Threshold",
+
+  s1_exception_without_status3_inotropes =
+    "Status 1 Exception - Does Not Meet Status 3 Inotrope Dose Threshold",
+
+  s2_exception_device_without_status3_inotropes =
+    "Status 2 Exception with IABP/PEVAD - Does Not Meet Status 3 Inotrope Dose Threshold"
+)
+
+
+primary_inotrope_results <- map_dfr(
+  primary_inotrope_outcomes,
+  function(v) {
+
+    tab <- table(
+      primary_inotrope_test_data$policy_group,
+      primary_inotrope_test_data[[v]]
+    )
+
+    test <- chisq.test(
+      tab
+    )
+
+    n_pre <- sum(
+      primary_inotrope_test_data$policy_group == "Pre" &
+        primary_inotrope_test_data[[v]],
+      na.rm = TRUE
+    )
+
+    n_post <- sum(
+      primary_inotrope_test_data$policy_group == "Post" &
+        primary_inotrope_test_data[[v]],
+      na.rm = TRUE
+    )
+
+    denom_pre <- sum(
+      primary_inotrope_test_data$policy_group == "Pre"
+    )
+
+    denom_post <- sum(
+      primary_inotrope_test_data$policy_group == "Post"
+    )
+
+    tibble(
+      outcome =
+        primary_inotrope_labels[[v]],
+
+      n_pre =
+        n_pre,
+
+      pct_pre =
+        100 * n_pre / denom_pre,
+
+      n_post =
+        n_post,
+
+      pct_post =
+        100 * n_post / denom_post,
+
+      absolute_change_pp =
+        pct_post - pct_pre,
+
+      relative_change_pct =
+        100 *
+        (
+          (pct_post / pct_pre) - 1
+        ),
+
+      chi_square =
+        unname(
+          test$statistic
+        ),
+
+      p_value =
+        test$p.value
+    )
+  }
+) %>%
+
+  mutate(
+    p_bonferroni =
+      p.adjust(
+        p_value,
+        method = "bonferroni"
+      ),
+
+    significant_bonferroni =
+      p_bonferroni < 0.05
+  )
+
+
+print(
+  primary_inotrope_results,
+  n = Inf,
+  width = Inf
+)
+
+
+```
+
+---
+
+# Secondary inotrope hypothesis
+
+The secondary hypothesis is whether the proportion of all newly listed candidates who **did meet Status 3 inotrope-dose criteria** and nevertheless entered each high-priority pathway changed after the policy.
+
+Bonferroni correction is applied across the three secondary pathway-specific comparisons.
+
+```{r secondary-inotrope-hypothesis}
+
+
+secondary_test_data <- study_analysis %>%
+  mutate(
+    s1_ecmo_meets_status3 =
+      standard_status1_ecmo &
+      meets_hd_inotrope_dose,
+
+    s1_exception_meets_status3 =
+      status1_exception &
+      meets_hd_inotrope_dose,
+
+    s2_exception_device_meets_status3 =
+      status2_exception_with_iabp_pevad &
+      meets_hd_inotrope_dose
+  )
+
+
+secondary_outcomes <- c(
+  "s1_ecmo_meets_status3",
+  "s1_exception_meets_status3",
+  "s2_exception_device_meets_status3"
+)
+
+
+secondary_labels <- c(
+  s1_ecmo_meets_status3 =
+    "Status 1 ECMO - Meets Status 3 Inotrope Dose Threshold",
+
+  s1_exception_meets_status3 =
+    "Status 1 Exception - Meets Status 3 Inotrope Dose Threshold",
+
+  s2_exception_device_meets_status3 =
+    "Status 2 Exception with IABP/PEVAD - Meets Status 3 Inotrope Dose Threshold"
+)
+
+
+secondary_results <- map_dfr(
+  secondary_outcomes,
+  function(v) {
+
+    tab <- table(
+      secondary_test_data$policy_group,
+      secondary_test_data[[v]]
+    )
+
+    test <- chisq.test(
+      tab
+    )
+
+    n_pre <- sum(
+      secondary_test_data$policy_group == "Pre" &
+        secondary_test_data[[v]],
+      na.rm = TRUE
+    )
+
+    n_post <- sum(
+      secondary_test_data$policy_group == "Post" &
+        secondary_test_data[[v]],
+      na.rm = TRUE
+    )
+
+    denom_pre <- sum(
+      secondary_test_data$policy_group == "Pre"
+    )
+
+    denom_post <- sum(
+      secondary_test_data$policy_group == "Post"
+    )
+
+    tibble(
+      outcome =
+        secondary_labels[[v]],
+
+      n_pre =
+        n_pre,
+
+      pct_pre =
+        100 * n_pre / denom_pre,
+
+      n_post =
+        n_post,
+
+      pct_post =
+        100 * n_post / denom_post,
+
+      absolute_change_pp =
+        pct_post - pct_pre,
+
+      relative_change_pct =
+        100 *
+        (
+          (pct_post / pct_pre) - 1
+        ),
+
+      chi_square =
+        unname(
+          test$statistic
+        ),
+
+      p_value =
+        test$p.value
+    )
+  }
+) %>%
+
+  mutate(
+    p_bonferroni =
+      p.adjust(
+        p_value,
+        method = "bonferroni"
+      ),
+
+    significant_bonferroni =
+      p_bonferroni < 0.05
+  )
+
+
+print(
+  secondary_results,
+  n = Inf,
+  width = Inf
+)
+
+
+```
+
+
+---
+
+# Absolute-count inotrope figure
+
+```{r making the inotrope figure! aka figure 2}
+
+
+# ============================================================
+# Build Annotation Data
+# ============================================================
+
+comparison_annotation_data <- absolute_inotrope_plot_data %>%
+  tidyr::pivot_wider(
+    names_from = c(
+      policy_group,
+      inotrope_category
+    ),
+    values_from = n,
+    values_fill = 0
+  ) %>%
+  mutate(
+    pre_meets =
+      `Pre_Meets Status 3 Dose Threshold`,
+
+    post_meets =
+      `Post_Meets Status 3 Dose Threshold`,
+
+    pre_below =
+      `Pre_Inotropes Documented below Status 3 Threshold`,
+
+    post_below =
+      `Post_Inotropes Documented below Status 3 Threshold`,
+
+    pre_none =
+      `Pre_No Inotropes Documented`,
+
+    post_none =
+      `Post_No Inotropes Documented`,
+
+    pre_total =
+      pre_meets +
+      pre_below +
+      pre_none,
+
+    post_total =
+      post_meets +
+      post_below +
+      post_none,
+
+    pre_meets_mid =
+      pre_meets / 2,
+
+    post_meets_mid =
+      post_meets / 2,
+
+    pre_not_meets_mid =
+      pre_meets +
+      (pre_below + pre_none) / 2,
+
+    post_not_meets_mid =
+      post_meets +
+      (post_below + post_none) / 2,
+
+    bracket_gap_pre =
+      0.05 * pre_total,
+
+    bracket_gap_post =
+      0.05 * post_total,
+
+    pre_bracket_x =
+      1.40,
+
+    pre_tick_x =
+      1.35,
+
+    post_bracket_x =
+      1.60,
+
+    post_tick_x =
+      1.65
+  )
+
+
+# ============================================================
+# Add Primary Significance Results
+# ============================================================
+
+primary_labels <- primary_inotrope_results %>%
+  mutate(
+    analysis_group = case_when(
+      grepl(
+        "Status 1 ECMO",
+        outcome
+      ) ~ "Status 1 ECMO",
+
+      grepl(
+        "Status 1 Exception",
+        outcome
+      ) ~ "Status 1 Exception",
+
+      grepl(
+        "Status 2 Exception with IABP/PEVAD",
+        outcome
+      ) ~ "Status 2 Exception with IABP/PEVAD"
+    ),
+
+    primary_sig =
+      ifelse(
+        significant_bonferroni,
+        "*",
+        ""
+      )
+  ) %>%
+  select(
+    analysis_group,
+    primary_sig
+  )
+
+
+# ============================================================
+# Add Secondary Significance Results
+# ============================================================
+
+secondary_labels <- secondary_results %>%
+  mutate(
+    analysis_group = case_when(
+      grepl(
+        "Status 1 ECMO",
+        outcome
+      ) ~ "Status 1 ECMO",
+
+      grepl(
+        "Status 1 Exception",
+        outcome
+      ) ~ "Status 1 Exception",
+
+      grepl(
+        "Status 2 Exception with IABP/PEVAD",
+        outcome
+      ) ~ "Status 2 Exception with IABP/PEVAD"
+    ),
+
+    secondary_sig =
+      ifelse(
+        significant_bonferroni,
+        "*",
+        ""
+      )
+  ) %>%
+  select(
+    analysis_group,
+    secondary_sig
+  )
+
+
+comparison_annotation_data <- comparison_annotation_data %>%
+  left_join(
+    primary_labels,
+    by = "analysis_group"
+  ) %>%
+  left_join(
+    secondary_labels,
+    by = "analysis_group"
+  )
+
+
+# ============================================================
+# Plot
+# ============================================================
+
+absolute_inotrope_plot <- ggplot(
+  absolute_inotrope_plot_data,
+  aes(
+    x = policy_group,
+    y = n,
+    fill = inotrope_category
+  )
+) +
+
+  geom_col(
+    width = 0.70
+  ) +
+
+  geom_text(
+    aes(
+      label = n
+    ),
+    position = position_stack(
+      vjust = 0.5
+    ),
+    size = 5
+  ) +
+
+  facet_wrap(
+    ~ analysis_group,
+    scales = "free_y",
+    nrow = 1,
+    labeller = as_labeller(
+      c(
+        "Status 1 ECMO" =
+          "Status 1 Standard VA-ECMO",
+
+        "Status 1 Exception" =
+          "Status 1 Exception",
+
+        "Status 2 Exception with IABP/PEVAD" =
+          "Status 2 Exception with IABP/PEVAD"
+      )
+    )
+  ) +
+
+  # ==========================================================
+  # LOWER BRACKETS
+  # Meets Status 3 High-Dose Threshold
+  # ==========================================================
+
+  # Pre lower bracket
+  geom_segment(
+    data = comparison_annotation_data,
+    aes(
+      x = pre_bracket_x,
+      xend = pre_bracket_x,
+      y = 0,
+      yend = pre_meets - bracket_gap_pre / 2
+    ),
+    inherit.aes = FALSE,
+    linewidth = 0.8
+  ) +
+
+  geom_segment(
+    data = comparison_annotation_data,
+    aes(
+      x = pre_tick_x,
+      xend = pre_bracket_x,
+      y = 0,
+      yend = 0
+    ),
+    inherit.aes = FALSE,
+    linewidth = 0.8
+  ) +
+
+  geom_segment(
+    data = comparison_annotation_data,
+    aes(
+      x = pre_tick_x,
+      xend = pre_bracket_x,
+      y = pre_meets - bracket_gap_pre / 2,
+      yend = pre_meets - bracket_gap_pre / 2
+    ),
+    inherit.aes = FALSE,
+    linewidth = 0.8
+  ) +
+
+  # Post lower bracket
+  geom_segment(
+    data = comparison_annotation_data,
+    aes(
+      x = post_bracket_x,
+      xend = post_bracket_x,
+      y = 0,
+      yend = post_meets - bracket_gap_post / 2
+    ),
+    inherit.aes = FALSE,
+    linewidth = 0.8
+  ) +
+
+  geom_segment(
+    data = comparison_annotation_data,
+    aes(
+      x = post_bracket_x,
+      xend = post_tick_x,
+      y = 0,
+      yend = 0
+    ),
+    inherit.aes = FALSE,
+    linewidth = 0.8
+  ) +
+
+  geom_segment(
+    data = comparison_annotation_data,
+    aes(
+      x = post_bracket_x,
+      xend = post_tick_x,
+      y = post_meets - bracket_gap_post / 2,
+      yend = post_meets - bracket_gap_post / 2
+    ),
+    inherit.aes = FALSE,
+    linewidth = 0.8
+  ) +
+
+  # Lower comparison line
+  geom_segment(
+    data = comparison_annotation_data,
+    aes(
+      x = 1.43,
+      xend = 1.57,
+      y = pre_meets_mid,
+      yend = post_meets_mid
+    ),
+    inherit.aes = FALSE,
+    linewidth = 0.8
+  ) +
+
+  # Secondary significance
+  geom_text(
+    data = comparison_annotation_data,
+    aes(
+      x = 1.50,
+      y =
+        pmax(
+          pre_meets_mid,
+          post_meets_mid
+        ) +
+        0.04 * pmax(
+          pre_total,
+          post_total
+        ),
+      label = secondary_sig
+    ),
+    inherit.aes = FALSE,
+    size = 7,
+    fontface = "bold"
+  ) +
+
+  # ==========================================================
+  # UPPER BRACKETS
+  # Does Not Meet Status 3 High-Dose Threshold
+  # ==========================================================
+
+  # Pre upper bracket
+  geom_segment(
+    data = comparison_annotation_data,
+    aes(
+      x = pre_bracket_x,
+      xend = pre_bracket_x,
+      y = pre_meets + bracket_gap_pre / 2,
+      yend = pre_total
+    ),
+    inherit.aes = FALSE,
+    linewidth = 0.8
+  ) +
+
+  geom_segment(
+    data = comparison_annotation_data,
+    aes(
+      x = pre_tick_x,
+      xend = pre_bracket_x,
+      y = pre_meets + bracket_gap_pre / 2,
+      yend = pre_meets + bracket_gap_pre / 2
+    ),
+    inherit.aes = FALSE,
+    linewidth = 0.8
+  ) +
+
+  geom_segment(
+    data = comparison_annotation_data,
+    aes(
+      x = pre_tick_x,
+      xend = pre_bracket_x,
+      y = pre_total,
+      yend = pre_total
+    ),
+    inherit.aes = FALSE,
+    linewidth = 0.8
+  ) +
+
+  # Post upper bracket
+  geom_segment(
+    data = comparison_annotation_data,
+    aes(
+      x = post_bracket_x,
+      xend = post_bracket_x,
+      y = post_meets + bracket_gap_post / 2,
+      yend = post_total
+    ),
+    inherit.aes = FALSE,
+    linewidth = 0.8
+  ) +
+
+  geom_segment(
+    data = comparison_annotation_data,
+    aes(
+      x = post_bracket_x,
+      xend = post_tick_x,
+      y = post_meets + bracket_gap_post / 2,
+      yend = post_meets + bracket_gap_post / 2
+    ),
+    inherit.aes = FALSE,
+    linewidth = 0.8
+  ) +
+
+  geom_segment(
+    data = comparison_annotation_data,
+    aes(
+      x = post_bracket_x,
+      xend = post_tick_x,
+      y = post_total,
+      yend = post_total
+    ),
+    inherit.aes = FALSE,
+    linewidth = 0.8
+  ) +
+
+  # Upper comparison line
+  geom_segment(
+    data = comparison_annotation_data,
+    aes(
+      x = 1.43,
+      xend = 1.57,
+      y = pre_not_meets_mid,
+      yend = post_not_meets_mid
+    ),
+    inherit.aes = FALSE,
+    linewidth = 0.8
+  ) +
+
+  # Primary significance
+  geom_text(
+    data = comparison_annotation_data,
+    aes(
+      x = 1.50,
+      y =
+        pmax(
+          pre_not_meets_mid,
+          post_not_meets_mid
+        ) +
+        0.04 * pmax(
+          pre_total,
+          post_total
+        ),
+      label = primary_sig
+    ),
+    inherit.aes = FALSE,
+    size = 7,
+    fontface = "bold"
+  ) +
+
+  # ==========================================================
+  # Colors and Theme
+  # ==========================================================
+
+  scale_fill_manual(
+    values = c(
+      "No Inotropes Documented" =
+        "#79af97",
+
+      "Inotropes Documented below Status 3 Threshold" =
+        "#df8f44",
+
+      "Meets Status 3 Dose Threshold" =
+        "#00a1d5"
+    ),
+    breaks = c(
+      "No Inotropes Documented",
+      "Inotropes Documented below Status 3 Threshold",
+      "Meets Status 3 Dose Threshold"
+    ),
+    labels = c(
+      "No Inotropic Support Documented",
+      "Inotropic Support Below Status 3 High-Dose Threshold",
+      "Meets Status 3 High-Dose Threshold"
+    )
+  ) +
+
+  guides(
+    fill = guide_legend(
+      nrow = 2,
+      byrow = TRUE
+    )
+  ) +
+
+  labs(
+    x = NULL,
+    y = "Number of Candidates",
+    fill = "Inotrope Therapy at Initial Listing"
+  ) +
+
+  theme_classic() +
+
+  theme(
+    strip.text =
+      element_text(
+        face = "bold",
+        size = 13
+      ),
+
+    axis.text =
+      element_text(
+        size = 13
+      ),
+
+    axis.title.y =
+      element_text(
+        size = 13
+      ),
+
+    legend.position =
+      "bottom",
+
+    legend.title =
+      element_text(
+        size = 13
+      ),
+
+    legend.text =
+      element_text(
+        size = 13
+      )
+  )
+
+
+print(
+  absolute_inotrope_plot
+)
+
+```
+
+
+
+
+``` {r creating figure 1}
+
+
+# ============================================================
+# 1. Continuous Figure Cohort
+# September 1, 2024 through June 30, 2026
+# ============================================================
+
+figure_start <- as.Date("2024-09-01")
+figure_end   <- as.Date("2026-06-30")
+
+
+figure_study <- thoracic_data %>%
+  mutate(
+    INIT_DATE = as.Date(INIT_DATE),
+    END_DATE = as.Date(END_DATE)
+  ) %>%
+  filter(
+    WL_ORG == "HR",
+    INIT_AGE >= 18,
+    INIT_DATE >= figure_start,
+    INIT_DATE <= figure_end
+  )
+
+
+# ============================================================
+# 2. Initial Status 1 Pathways
+# ============================================================
+
+figure_status1_flags <- thoracic_stat1 %>%
+  mutate(
+    FORMEFFECTIVEDT = as.Date(FORMEFFECTIVEDT)
+  ) %>%
+  filter(
+    !FORMSTATUS %in% invalid_form_statuses
+  ) %>%
+  inner_join(
+    figure_study %>%
+      select(
+        WL_ID_CODE,
+        INIT_DATE,
+        INIT_STAT
+      ),
+    by = "WL_ID_CODE"
+  ) %>%
+  filter(
+    INIT_STAT == 2110,
+    UNOS_CAND_STAT_CD == 2110,
+    FORMEFFECTIVEDT == INIT_DATE
+  ) %>%
+  group_by(
+    WL_ID_CODE,
+    INIT_DATE
+  ) %>%
+  summarise(
+    standard_status1_ecmo =
+      any(
+        EXCEPTION == 0 &
+          CRITERIAECMOSUPPORT == 1,
+        na.rm = TRUE
+      ),
+    
+    status1_exception =
+      any(
+        EXCEPTION == 1,
+        na.rm = TRUE
+      ),
+    
+    .groups = "drop"
+  )
+
+
+# ============================================================
+# 3. Initial Status 2 Pathways
+# ============================================================
+
+figure_status2_flags <- thoracic_stat2 %>%
+  mutate(
+    FORMEFFECTIVEDT = as.Date(FORMEFFECTIVEDT)
+  ) %>%
+  filter(
+    !FORMSTATUS %in% invalid_form_statuses
+  ) %>%
+  inner_join(
+    figure_study %>%
+      select(
+        WL_ID_CODE,
+        INIT_DATE,
+        INIT_STAT
+      ),
+    by = "WL_ID_CODE"
+  ) %>%
+  filter(
+    INIT_STAT == 2120,
+    UNOS_CAND_STAT_CD == 2120,
+    FORMEFFECTIVEDT == INIT_DATE
+  ) %>%
+  group_by(
+    WL_ID_CODE,
+    INIT_DATE
+  ) %>%
+  summarise(
+    standard_status2_iabp =
+      any(
+        EXCEPTION == 0 &
+          CRITERIAIABPSUPPORT == 1,
+        na.rm = TRUE
+      ),
+    
+    standard_status2_pevad =
+      any(
+        EXCEPTION == 0 &
+          CRITERIAMCSDENDOVASSUPP == 1,
+        na.rm = TRUE
+      ),
+    
+    standard_status2_iabp_pevad =
+      any(
+        EXCEPTION == 0 &
+          (
+            CRITERIAIABPSUPPORT == 1 |
+              CRITERIAMCSDENDOVASSUPP == 1
+          ),
+        na.rm = TRUE
+      ),
+    
+    status2_exception =
+      any(
+        EXCEPTION == 1,
+        na.rm = TRUE
+      ),
+    
+    .groups = "drop"
+  )
+
+
+# ============================================================
+# 4. Initial Status 3 High-Dose Inotrope Pathway
+# ============================================================
+
+figure_status3_flags <- thoracic_stat3 %>%
+  mutate(
+    FORMEFFECTIVEDT = as.Date(FORMEFFECTIVEDT)
+  ) %>%
+  filter(
+    !FORMSTATUS %in% invalid_form_statuses
+  ) %>%
+  inner_join(
+    figure_study %>%
+      select(
+        WL_ID_CODE,
+        INIT_DATE,
+        INIT_STAT
+      ),
+    by = "WL_ID_CODE"
+  ) %>%
+  filter(
+    INIT_STAT == 2130,
+    UNOS_CAND_STAT_CD == 2130,
+    FORMEFFECTIVEDT == INIT_DATE
+  ) %>%
+  group_by(
+    WL_ID_CODE,
+    INIT_DATE
+  ) %>%
+  summarise(
+    standard_status3_hd_inotrope =
+      any(
+        EXCEPTION == 0 &
+          CRITERIAINOTROPESUPPORT == 1,
+        na.rm = TRUE
+      ),
+    
+    .groups = "drop"
+  )
+
+
+# ============================================================
+# 5. IABP/PEVAD Support Recorded on Status Forms
+# ============================================================
+
+figure_status_form_devices <- bind_rows(
+  thoracic_stat1,
+  thoracic_stat2,
+  thoracic_stat3,
+  thoracic_stat4
+) %>%
+  mutate(
+    FORMEFFECTIVEDT = as.Date(FORMEFFECTIVEDT)
+  ) %>%
+  filter(
+    !FORMSTATUS %in% invalid_form_statuses
+  ) %>%
+  inner_join(
+    figure_study %>%
+      select(
+        WL_ID_CODE,
+        INIT_DATE
+      ),
+    by = "WL_ID_CODE"
+  ) %>%
+  filter(
+    FORMEFFECTIVEDT == INIT_DATE
+  ) %>%
+  group_by(
+    WL_ID_CODE,
+    INIT_DATE
+  ) %>%
+  summarise(
+    iabp_status_form =
+      any(
+        PRIM_DEVICETYPEID == 8 |
+          SEC_DEVICETYPEID == 8,
+        na.rm = TRUE
+      ),
+    
+    pevad_status_form =
+      any(
+        PRIM_DEVICETYPEID == 11 |
+          SEC_DEVICETYPEID == 11,
+        na.rm = TRUE
+      ),
+    
+    .groups = "drop"
+  )
+
+
+# ============================================================
+# 6. Device Support from MCS File
+# ============================================================
+
+figure_mcs_devices <- thoracic_mcs_device %>%
+  mutate(
+    IMPLANT_DATE = as.Date(IMPLANT_DATE),
+    EXPLANT_DATE = as.Date(EXPLANT_DATE)
+  ) %>%
+  inner_join(
+    figure_study %>%
+      select(
+        WL_ID_CODE,
+        INIT_DATE
+      ),
+    by = "WL_ID_CODE"
+  ) %>%
+  filter(
+    (
+      DEVICE_TYPE == "IABP" |
+        (
+          DEVICE_TYPE == "Percutaneous Device" &
+            VENTRICULAR_SUPPORT == "Left"
+        ) |
+        DEVICE_TYPE == "VA ECMO"
+    ),
+    IMPLANT_DATE <= INIT_DATE,
+    is.na(EXPLANT_DATE) |
+      EXPLANT_DATE >= INIT_DATE
+  ) %>%
+  group_by(
+    WL_ID_CODE,
+    INIT_DATE
+  ) %>%
+  summarise(
+    iabp_mcs_file =
+      any(
+        DEVICE_TYPE == "IABP",
+        na.rm = TRUE
+      ),
+    
+    pevad_mcs_file =
+      any(
+        DEVICE_TYPE == "Percutaneous Device" &
+          VENTRICULAR_SUPPORT == "Left",
+        na.rm = TRUE
+      ),
+    
+    va_ecmo_mcs_file =
+      any(
+        DEVICE_TYPE == "VA ECMO",
+        na.rm = TRUE
+      ),
+    
+    .groups = "drop"
+  )
+
+
+# ============================================================
+# 7. Construct Continuous Figure Analysis Dataset
+# ============================================================
+
+figure_analysis <- figure_study %>%
+  
+  left_join(
+    figure_status1_flags,
+    by = c(
+      "WL_ID_CODE",
+      "INIT_DATE"
+    )
+  ) %>%
+  
+  left_join(
+    figure_status2_flags,
+    by = c(
+      "WL_ID_CODE",
+      "INIT_DATE"
+    )
+  ) %>%
+  
+  left_join(
+    figure_status3_flags,
+    by = c(
+      "WL_ID_CODE",
+      "INIT_DATE"
+    )
+  ) %>%
+  
+  left_join(
+    figure_status_form_devices,
+    by = c(
+      "WL_ID_CODE",
+      "INIT_DATE"
+    )
+  ) %>%
+  
+  left_join(
+    figure_mcs_devices,
+    by = c(
+      "WL_ID_CODE",
+      "INIT_DATE"
+    )
+  ) %>%
+  
+  mutate(
+    standard_status1_ecmo =
+      coalesce(
+        standard_status1_ecmo,
+        FALSE
+      ),
+    
+    status1_exception =
+      coalesce(
+        status1_exception,
+        FALSE
+      ),
+    
+    standard_status2_iabp =
+      coalesce(
+        standard_status2_iabp,
+        FALSE
+      ),
+    
+    standard_status2_pevad =
+      coalesce(
+        standard_status2_pevad,
+        FALSE
+      ),
+    
+    standard_status2_iabp_pevad =
+      coalesce(
+        standard_status2_iabp_pevad,
+        FALSE
+      ),
+    
+    status2_exception =
+      coalesce(
+        status2_exception,
+        FALSE
+      ),
+    
+    standard_status3_hd_inotrope =
+      coalesce(
+        standard_status3_hd_inotrope,
+        FALSE
+      ),
+    
+    iabp_mcs_file =
+      coalesce(
+        iabp_mcs_file,
+        FALSE
+      ),
+    
+    pevad_mcs_file =
+      coalesce(
+        pevad_mcs_file,
+        FALSE
+      ),
+    
+    va_ecmo_mcs_file =
+      coalesce(
+        va_ecmo_mcs_file,
+        FALSE
+      ),
+    
+    iabp_status_form =
+      coalesce(
+        iabp_status_form,
+        FALSE
+      ),
+    
+    pevad_status_form =
+      coalesce(
+        pevad_status_form,
+        FALSE
+      ),
+    
+    iabp_at_listing =
+      iabp_mcs_file |
+      iabp_status_form,
+    
+    pevad_at_listing =
+      pevad_mcs_file |
+      pevad_status_form,
+    
+    va_ecmo_at_listing =
+      va_ecmo_mcs_file,
+    
+    any_iabp_pevad_at_listing =
+      iabp_at_listing |
+      pevad_at_listing,
+    
+    status2_exception_with_iabp_pevad =
+      status2_exception &
+      any_iabp_pevad_at_listing,
+    
+    status2_exception_without_iabp_pevad =
+      status2_exception &
+      !any_iabp_pevad_at_listing
+  )
+
+
+# ============================================================
+# 8. Monthly Figure Data
+# ============================================================
+
+figure_months <- seq(
+  as.Date("2024-09-01"),
+  as.Date("2026-06-01"),
+  by = "1 month"
+)
+
+
+monthly_pathway_data <- figure_analysis %>%
+  mutate(
+    listing_month =
+      floor_date(
+        INIT_DATE,
+        unit = "month"
+      )
+  ) %>%
+  group_by(
+    listing_month
+  ) %>%
+  summarise(
+    `Status 1 Standard VA-ECMO` =
+      sum(
+        standard_status1_ecmo,
+        na.rm = TRUE
+      ),
+
+    `Status 1 Exception` =
+      sum(
+        status1_exception,
+        na.rm = TRUE
+      ),
+
+    `Status 2 Standard IABP` =
+      sum(
+        standard_status2_iabp,
+        na.rm = TRUE
+      ),
+
+    `Status 2 Standard PEVAD` =
+      sum(
+        standard_status2_pevad,
+        na.rm = TRUE
+      ),
+
+    `Status 2 Exception with IABP/PEVAD` =
+      sum(
+        status2_exception_with_iabp_pevad,
+        na.rm = TRUE
+      ),
+
+    `Status 2 Exception without IABP/PEVAD` =
+      sum(
+        status2_exception_without_iabp_pevad,
+        na.rm = TRUE
+      ),
+
+    `Status 3 Standard High-Dose Inotropes` =
+      sum(
+        standard_status3_hd_inotrope,
+        na.rm = TRUE
+      ),
+
+    any_iabp_pevad =
+      sum(
+        any_iabp_pevad_at_listing,
+        na.rm = TRUE
+      ),
+
+    va_ecmo =
+      sum(
+        va_ecmo_at_listing,
+        na.rm = TRUE
+      ),
+
+    .groups = "drop"
+  ) %>%
+
+  # Ensure all months are represented
+  tidyr::complete(
+    listing_month = figure_months,
+    fill = list(
+      `Status 1 Standard VA-ECMO` = 0,
+      `Status 1 Exception` = 0,
+      `Status 2 Standard IABP` = 0,
+      `Status 2 Standard PEVAD` = 0,
+      `Status 2 Exception with IABP/PEVAD` = 0,
+      `Status 2 Exception without IABP/PEVAD` = 0,
+      `Status 3 Standard High-Dose Inotropes` = 0,
+      any_iabp_pevad = 0,
+      va_ecmo = 0
+    )
+  ) %>%
+
+  arrange(
+    listing_month
+  ) %>%
+
+  # Equal-distance x-axis position
+  mutate(
+    month_index =
+      match(
+        listing_month,
+        figure_months
+      )
+  )
+
+
+# ============================================================
+# 9. Long-Format Pathway Data
+# ============================================================
+
+pathway_order <- c(
+  "Status 1 Standard VA-ECMO",
+  "Status 1 Exception",
+  "Status 2 Standard IABP",
+  "Status 2 Standard PEVAD",
+  "Status 2 Exception with IABP/PEVAD",
+  "Status 2 Exception without IABP/PEVAD",
+  "Status 3 Standard High-Dose Inotropes"
+)
+
+
+monthly_pathway_long <- monthly_pathway_data %>%
+  select(
+    listing_month,
+    month_index,
+    all_of(
+      pathway_order
+    )
+  ) %>%
+  pivot_longer(
+    cols = all_of(
+      pathway_order
+    ),
+    names_to = "pathway",
+    values_to = "n"
+  ) %>%
+  mutate(
+    pathway = factor(
+      pathway,
+      levels = pathway_order
+    )
+  )
+
+
+# ============================================================
+# 10. Main Figure
+# ============================================================
+#
+# Month positions:
+#
+# Sep 2024 = 1
+# ...
+# Jun 2025 = 10
+# Jul 2025 = 11
+# Aug 2025 = 12
+# Sep 2025 = 13
+# Oct 2025 = 14
+# ...
+# Jun 2026 = 22
+#
+# Shading begins halfway after September in each matched window,
+# approximating the September 17 start date.
+#
+# Policy line is placed between Sep 2025 and Oct 2025.
+# ============================================================
+
+
+monthly_allocation_plot <- ggplot() +
+
+  # ----------------------------------------------------------
+  # Pre-policy matched window
+  # ----------------------------------------------------------
+
+  annotate(
+    "rect",
+    xmin = 1.5,
+    xmax = 10.5,
+    ymin = 0,
+    ymax = 250,
+    fill = "grey85",
+    alpha = 0.6
+  ) +
+
+  # ----------------------------------------------------------
+  # Post-policy matched window
+  # ----------------------------------------------------------
+
+  annotate(
+    "rect",
+    xmin = 13.5,
+    xmax = 22.5,
+    ymin = 0,
+    ymax = 250,
+    fill = "grey85",
+    alpha = 0.6
+  ) +
+
+  # ----------------------------------------------------------
+  # Stacked pathway bars
+  #
+  # reverse = TRUE makes bottom -> top follow pathway_order
+  # ----------------------------------------------------------
+
+  geom_col(
+    data = monthly_pathway_long,
+    aes(
+      x = month_index,
+      y = n,
+      fill = pathway
+    ),
+    width = 0.78,
+    position = position_stack(
+      reverse = TRUE
+    )
+  ) +
+
+  # ----------------------------------------------------------
+  # All IABP / PEVAD support
+  # ----------------------------------------------------------
+
+  geom_line(
+    data = monthly_pathway_data,
+    aes(
+      x = month_index,
+      y = any_iabp_pevad,
+      color =
+        "All Initial Listings with IABP/PEVAD Support",
+      group = 1
+    ),
+    linewidth = 1.1
+  ) +
+
+  geom_point(
+    data = monthly_pathway_data,
+    aes(
+      x = month_index,
+      y = any_iabp_pevad,
+      color =
+        "All Initial Listings with IABP/PEVAD Support"
+    ),
+    size = 2.2
+  ) +
+
+  # ----------------------------------------------------------
+  # All VA-ECMO support
+  # ----------------------------------------------------------
+
+  geom_line(
+    data = monthly_pathway_data,
+    aes(
+      x = month_index,
+      y = va_ecmo,
+      color =
+        "All Initial Listings with VA-ECMO Support",
+      group = 1
+    ),
+    linewidth = 1.1
+  ) +
+
+  geom_point(
+    data = monthly_pathway_data,
+    aes(
+      x = month_index,
+      y = va_ecmo,
+      color =
+        "All Initial Listings with VA-ECMO Support"
+    ),
+    size = 2.2
+  ) +
+
+  # ----------------------------------------------------------
+  # September 17, 2025 policy change
+  # ----------------------------------------------------------
+
+  geom_vline(
+    aes(
+      xintercept = 13.5,
+      linetype =
+        "September 17, 2025 Policy Change"
+    ),
+    linewidth = 1,
+    color = "black"
+  ) +
+
+  # ----------------------------------------------------------
+  # Policy-window labels
+  # ----------------------------------------------------------
+
+  annotate(
+    "text",
+    x = 6,
+    y = 242,
+    label = "Pre-Policy",
+    fontface = "bold",
+    size = 5
+  ) +
+
+  annotate(
+    "text",
+    x = 18,
+    y = 242,
+    label = "Post-Policy",
+    fontface = "bold",
+    size = 5
+  ) +
+
+  # ----------------------------------------------------------
+  # Bar colors
+  # ----------------------------------------------------------
+
+  scale_fill_manual(
+    values = c(
+      "Status 1 Standard VA-ECMO" =
+        "#374e55",
+
+      "Status 1 Exception" =
+        "#79af97",
+
+      "Status 2 Standard IABP" =
+        "#E0C36A",
+
+      "Status 2 Standard PEVAD" =
+        "#df8f44",
+
+      "Status 2 Exception with IABP/PEVAD" =
+        "#ab3435",
+
+      "Status 2 Exception without IABP/PEVAD" =
+        "#80699b",
+
+      "Status 3 Standard High-Dose Inotropes" =
+        "#00a1d5"
+    ),
+    breaks = pathway_order
+  ) +
+
+  # ----------------------------------------------------------
+  # Line colors
+  # ----------------------------------------------------------
+
+  scale_color_manual(
+    values = c(
+      "All Initial Listings with IABP/PEVAD Support" =
+        "black",
+
+      "All Initial Listings with VA-ECMO Support" =
+        "#c51b7d"
+    ),
+    name = NULL
+  ) +
+
+  # ----------------------------------------------------------
+  # Policy line
+  # ----------------------------------------------------------
+
+  scale_linetype_manual(
+    values = c(
+      "September 17, 2025 Policy Change" =
+        "dashed"
+    ),
+    name = NULL
+  ) +
+
+  # ----------------------------------------------------------
+  # Equal-width monthly x-axis
+  # ----------------------------------------------------------
+
+  scale_x_continuous(
+    breaks = seq_along(
+      figure_months
+    ),
+    labels = format(
+      figure_months,
+      "%b %Y"
+    ),
+    limits = c(
+      0.5,
+      22.5
+    ),
+    expand = c(
+      0,
+      0
+    )
+  ) +
+
+  scale_y_continuous(
+    limits = c(
+      0,
+      250
+    ),
+    expand = c(
+      0,
+      0
+    )
+  ) +
+
+  coord_cartesian(
+    clip = "off"
+  ) +
+
+  labs(
+    x = "Month",
+    y = "Number of Initial Listings",
+    fill = NULL
+  ) +
+
+  theme_classic() +
+
+  theme(
+    legend.position =
+      "none",
+
+    axis.text.x =
+      element_text(
+        angle = 45,
+        hjust = 1,
+        size = 13
+      ),
+
+    axis.text.y =
+      element_text(
+        size = 13
+      ),
+
+    axis.title =
+      element_text(
+        size = 13
+      ),
+
+    plot.margin =
+      margin(
+        t = 15,
+        r = 10,
+        b = 10,
+        l = 10
+      )
+  )
+
+
+# ============================================================
+# 11. Colored Bar Legend
+# Desired order:
+#
+# 1. Status 1 Standard VA-ECMO
+# 2. Status 1 Exception
+# 3. Status 2 Standard IABP
+# 4. Status 2 Standard PEVAD
+# 5. Status 2 Exception with IABP/PEVAD
+# 6. Status 2 Exception without IABP/PEVAD
+# 7. Status 3 Standard High-Dose Inotropes
+# ============================================================
+
+fill_legend_plot <- ggplot(
+  monthly_pathway_long,
+  aes(
+    x = month_index,
+    y = n,
+    fill = pathway
+  )
+) +
+
+  geom_col() +
+
+  scale_fill_manual(
+    values = c(
+      "Status 1 Standard VA-ECMO" =
+        "#374e55",
+
+      "Status 1 Exception" =
+        "#79af97",
+
+      "Status 2 Standard IABP" =
+        "#E0C36A",
+
+      "Status 2 Standard PEVAD" =
+        "#df8f44",
+
+      "Status 2 Exception with IABP/PEVAD" =
+        "#ab3435",
+
+      "Status 2 Exception without IABP/PEVAD" =
+        "#80699b",
+
+      "Status 3 Standard High-Dose Inotropes" =
+        "#00a1d5"
+    ),
+    breaks = pathway_order
+  ) +
+
+  guides(
+    fill = guide_legend(
+      ncol = 2,
+      byrow = TRUE
+    )
+  ) +
+
+  theme_void() +
+
+  theme(
+    legend.position =
+      "bottom",
+
+    legend.title =
+      element_blank(),
+
+    legend.text =
+      element_text(
+        size = 13
+      ),
+
+    legend.margin =
+      margin(
+        0,
+        0,
+        0,
+        0
+      )
+  )
+
+
+fill_legend <- cowplot::get_legend(
+  fill_legend_plot
+)
+
+
+# ============================================================
+# 12. Device-Line + Policy-Change Legend
+# ============================================================
+
+line_policy_legend_plot <- ggplot(
+  data.frame(
+    x = c(
+      1,
+      2
+    ),
+    y = c(
+      1,
+      1
+    )
+  ),
+  aes(
+    x = x,
+    y = y
+  )
+) +
+
+  geom_line(
+    aes(
+      color =
+        "All Initial Listings with IABP/PEVAD Support"
+    ),
+    linewidth = 1.1
+  ) +
+
+  geom_point(
+    aes(
+      color =
+        "All Initial Listings with IABP/PEVAD Support"
+    ),
+    size = 2.2
+  ) +
+
+  geom_line(
+    aes(
+      color =
+        "All Initial Listings with VA-ECMO Support"
+    ),
+    linewidth = 1.1
+  ) +
+
+  geom_point(
+    aes(
+      color =
+        "All Initial Listings with VA-ECMO Support"
+    ),
+    size = 2.2
+  ) +
+
+  geom_vline(
+    aes(
+      xintercept = 1.5,
+      linetype =
+        "September 17, 2025 Policy Change"
+    ),
+    color = "black",
+    linewidth = 1
+  ) +
+
+  scale_color_manual(
+    values = c(
+      "All Initial Listings with IABP/PEVAD Support" =
+        "black",
+
+      "All Initial Listings with VA-ECMO Support" =
+        "#c51b7d"
+    ),
+    name = NULL
+  ) +
+
+  scale_linetype_manual(
+    values = c(
+      "September 17, 2025 Policy Change" =
+        "dashed"
+    ),
+    name = NULL
+  ) +
+
+  guides(
+    color = guide_legend(
+      order = 1,
+      nrow = 2,
+      byrow = TRUE
+    ),
+
+    linetype = guide_legend(
+      order = 2,
+      nrow = 1,
+      override.aes = list(
+        color = "black",
+        linewidth = 1
+      )
+    )
+  ) +
+
+  theme_void() +
+
+  theme(
+    legend.position =
+      "bottom",
+
+    legend.box =
+      "vertical",
+
+    legend.title =
+      element_blank(),
+
+    legend.text =
+      element_text(
+        size = 13
+      ),
+
+    legend.margin =
+      margin(
+        0,
+        0,
+        0,
+        0
+      )
+  )
+
+
+line_policy_legend <- cowplot::get_legend(
+  line_policy_legend_plot
+)
+
+
+# ============================================================
+# 13. Combine Legend Blocks and Final Figure
+# ============================================================
+
+combined_legend <- cowplot::plot_grid(
+  fill_legend,
+  line_policy_legend,
+  nrow = 1,
+  rel_widths = c(
+    2.6,
+    1
+  ),
+  align = "h"
+)
+
+
+final_monthly_plot <- cowplot::plot_grid(
+  monthly_allocation_plot,
+  combined_legend,
+  ncol = 1,
+  rel_heights = c(
+    1,
+    0.30
+  )
+)
+
+
+print(
+  final_monthly_plot
+)
+
+```
+
+``` {r figure 3 transplants}
+
+# ============================================================
+# Status 1 and 2 Transplants:
+# Standard vs Exception at Time of Transplant
+# ============================================================
+
+library(dplyr)
+library(tidyr)
+library(lubridate)
+library(ggplot2)
+
+
+# ============================================================
+# 1. Continuous Transplant Cohort
+# September 2024 through June 2026
+# ============================================================
+
+tx_start <- as.Date("2024-09-01")
+tx_end   <- as.Date("2026-06-30")
+
+
+transplant_cohort_full <- thoracic_data %>%
+  mutate(
+    TX_DATE = as.Date(TX_DATE)
+  ) %>%
+  filter(
+    WL_ORG == "HR",
+    INIT_AGE >= 18,
+    !is.na(TX_DATE),
+    TX_DATE >= tx_start,
+    TX_DATE <= tx_end
+  )
+
+
+# ============================================================
+# 2. Prepare Valid Status 1 Forms
+# ============================================================
+
+tx_status1_forms <- thoracic_stat1 %>%
+  mutate(
+    FORMEFFECTIVEDT = as.Date(FORMEFFECTIVEDT)
+  ) %>%
+  filter(
+    !FORMSTATUS %in% invalid_form_statuses,
+    UNOS_CAND_STAT_CD == 2110
+  ) %>%
+  inner_join(
+    transplant_cohort_full %>%
+      filter(
+        END_STAT == 2110
+      ) %>%
+      select(
+        WL_ID_CODE,
+        TX_DATE
+      ),
+    by = "WL_ID_CODE"
+  ) %>%
+  filter(
+    !is.na(UNOS_CAND_STAT_DT),
+    as.Date(UNOS_CAND_STAT_DT) <= TX_DATE
+  )
+
+
+# ============================================================
+# 3. Classify Status 1 at Transplant
+# Latest Timestamp; Exception Takes Precedence if Exact Tie
+# ============================================================
+
+tx_status1_latest_timestamp <- tx_status1_forms %>%
+  group_by(
+    WL_ID_CODE
+  ) %>%
+  summarise(
+    latest_status1_timestamp =
+      max(
+        UNOS_CAND_STAT_DT,
+        na.rm = TRUE
+      ),
+    .groups = "drop"
+  )
+
+
+tx_status1_classification <- tx_status1_forms %>%
+  inner_join(
+    tx_status1_latest_timestamp,
+    by = "WL_ID_CODE"
+  ) %>%
+  filter(
+    UNOS_CAND_STAT_DT ==
+      latest_status1_timestamp
+  ) %>%
+  group_by(
+    WL_ID_CODE
+  ) %>%
+  summarise(
+    status1_exception =
+      any(
+        EXCEPTION == 1,
+        na.rm = TRUE
+      ),
+    
+    status1_standard =
+      !status1_exception &
+      any(
+        EXCEPTION == 0,
+        na.rm = TRUE
+      ),
+    
+    latest_status1_timestamp =
+      first(
+        latest_status1_timestamp
+      ),
+    
+    .groups = "drop"
+  )
+
+
+# ============================================================
+# 4. Prepare Valid Status 2 Forms
+# ============================================================
+
+tx_status2_forms <- thoracic_stat2 %>%
+  mutate(
+    FORMEFFECTIVEDT = as.Date(FORMEFFECTIVEDT)
+  ) %>%
+  filter(
+    !FORMSTATUS %in% invalid_form_statuses,
+    UNOS_CAND_STAT_CD == 2120
+  ) %>%
+  inner_join(
+    transplant_cohort_full %>%
+      filter(
+        END_STAT == 2120
+      ) %>%
+      select(
+        WL_ID_CODE,
+        TX_DATE
+      ),
+    by = "WL_ID_CODE"
+  ) %>%
+  filter(
+    !is.na(UNOS_CAND_STAT_DT),
+    as.Date(UNOS_CAND_STAT_DT) <= TX_DATE
+  )
+
+
+# ============================================================
+# 5. Classify Status 2 at Transplant
+# Latest Timestamp; Exception Takes Precedence if Exact Tie
+# ============================================================
+
+tx_status2_latest_timestamp <- tx_status2_forms %>%
+  group_by(
+    WL_ID_CODE
+  ) %>%
+  summarise(
+    latest_status2_timestamp =
+      max(
+        UNOS_CAND_STAT_DT,
+        na.rm = TRUE
+      ),
+    .groups = "drop"
+  )
+
+
+tx_status2_classification <- tx_status2_forms %>%
+  inner_join(
+    tx_status2_latest_timestamp,
+    by = "WL_ID_CODE"
+  ) %>%
+  filter(
+    UNOS_CAND_STAT_DT ==
+      latest_status2_timestamp
+  ) %>%
+  group_by(
+    WL_ID_CODE
+  ) %>%
+  summarise(
+    status2_exception =
+      any(
+        EXCEPTION == 1,
+        na.rm = TRUE
+      ),
+    
+    status2_standard =
+      !status2_exception &
+      any(
+        EXCEPTION == 0,
+        na.rm = TRUE
+      ),
+    
+    latest_status2_timestamp =
+      first(
+        latest_status2_timestamp
+      ),
+    
+    .groups = "drop"
+  )
+
+
+# ============================================================
+# 6. Join Classification to Transplant Cohort
+# ============================================================
+
+transplant_exception_analysis <- transplant_cohort_full %>%
+  left_join(
+    tx_status1_classification,
+    by = "WL_ID_CODE"
+  ) %>%
+  left_join(
+    tx_status2_classification,
+    by = "WL_ID_CODE"
+  )
+
+
+# ============================================================
+# 7. Coverage Check
+# ============================================================
+
+status1_coverage <- transplant_exception_analysis %>%
+  filter(
+    END_STAT == 2110
+  ) %>%
+  summarise(
+    n_status1_transplants = n(),
+    
+    n_with_status1_form =
+      sum(
+        !is.na(
+          latest_status1_timestamp
+        )
+      ),
+    
+    pct_with_status1_form =
+      100 *
+      mean(
+        !is.na(
+          latest_status1_timestamp
+        )
+      )
+  )
+
+print(
+  status1_coverage
+)
+
+
+status2_coverage <- transplant_exception_analysis %>%
+  filter(
+    END_STAT == 2120
+  ) %>%
+  summarise(
+    n_status2_transplants = n(),
+    
+    n_with_status2_form =
+      sum(
+        !is.na(
+          latest_status2_timestamp
+        )
+      ),
+    
+    pct_with_status2_form =
+      100 *
+      mean(
+        !is.na(
+          latest_status2_timestamp
+        )
+      )
+  )
+
+print(
+  status2_coverage
+)
+
+
+# ============================================================
+# 8. Create Final Transplant Pathway Categories
+# ============================================================
+
+transplant_exception_analysis <- transplant_exception_analysis %>%
+  mutate(
+    transplant_pathway = case_when(
+      
+      END_STAT == 2110 &
+        status1_exception == TRUE ~
+        "Status 1 Exception",
+      
+      END_STAT == 2110 &
+        status1_standard == TRUE ~
+        "Status 1 Standard",
+      
+      END_STAT == 2110 ~
+        "Status 1 Unclassified",
+      
+      END_STAT == 2120 &
+        status2_exception == TRUE ~
+        "Status 2 Exception",
+      
+      END_STAT == 2120 &
+        status2_standard == TRUE ~
+        "Status 2 Standard",
+      
+      END_STAT == 2120 ~
+        "Status 2 Unclassified",
+      
+      END_STAT %in% c(
+        2130,
+        2140,
+        2150,
+        2160
+      ) ~
+        "Statuses 3-6",
+      
+      TRUE ~
+        NA_character_
+    )
+  )
+
+
+# ============================================================
+# 9. Final Classification Counts
+# ============================================================
+
+transplant_exception_analysis %>%
+  count(
+    transplant_pathway,
+    sort = TRUE
+  ) %>%
+  print(
+    n = Inf
+  )
+
+
+# ============================================================
+# 10. Matched Pre/Post Cohort
+# ============================================================
+
+transplant_exception_matched <- transplant_exception_analysis %>%
+  mutate(
+    policy_group = case_when(
+      
+      TX_DATE >= as.Date("2024-09-17") &
+        TX_DATE <= as.Date("2025-06-30") ~
+        "Pre",
+      
+      TX_DATE >= as.Date("2025-09-17") &
+        TX_DATE <= as.Date("2026-06-30") ~
+        "Post",
+      
+      TRUE ~
+        NA_character_
+    ),
+    
+    policy_group = factor(
+      policy_group,
+      levels = c(
+        "Pre",
+        "Post"
+      )
+    )
+  ) %>%
+  filter(
+    !is.na(policy_group),
+    !is.na(transplant_pathway)
+  )
+
+
+# ============================================================
+# 11. Total Transplant Volume
+# ============================================================
+
+total_transplant_volume <- transplant_exception_matched %>%
+  count(
+    policy_group,
+    name = "n_transplants"
+  )
+
+print(
+  total_transplant_volume
+)
+
+
+pre_n <- total_transplant_volume %>%
+  filter(
+    policy_group == "Pre"
+  ) %>%
+  pull(
+    n_transplants
+  )
+
+post_n <- total_transplant_volume %>%
+  filter(
+    policy_group == "Post"
+  ) %>%
+  pull(
+    n_transplants
+  )
+
+
+total_volume_test <- poisson.test(
+  x = c(
+    pre_n,
+    post_n
+  ),
+  T = c(
+    1,
+    1
+  )
+)
+
+print(
+  total_volume_test
+)
+
+
+# ============================================================
+# 12. Matched Pre/Post Summary
+# ============================================================
+
+transplant_exception_summary <- transplant_exception_matched %>%
+  count(
+    policy_group,
+    transplant_pathway,
+    name = "n"
+  ) %>%
+  group_by(
+    policy_group
+  ) %>%
+  mutate(
+    total_transplants =
+      sum(n),
+    
+    percent =
+      100 * n /
+      total_transplants
+  ) %>%
+  ungroup()
+
+print(
+  transplant_exception_summary,
+  n = Inf
+)
+
+
+# ============================================================
+# 13. Overall 5-Category Pearson Chi-Square Test
+# ============================================================
+
+transplant_5cat_analysis <- transplant_exception_matched %>%
+  filter(
+    transplant_pathway %in% c(
+      "Status 1 Standard",
+      "Status 1 Exception",
+      "Status 2 Standard",
+      "Status 2 Exception",
+      "Statuses 3-6"
+    )
+  ) %>%
+  mutate(
+    transplant_pathway = factor(
+      transplant_pathway,
+      levels = c(
+        "Status 1 Standard",
+        "Status 1 Exception",
+        "Status 2 Standard",
+        "Status 2 Exception",
+        "Statuses 3-6"
+      )
+    )
+  )
+
+
+transplant_5cat_table <- table(
+  transplant_5cat_analysis$policy_group,
+  transplant_5cat_analysis$transplant_pathway
+)
+
+print(
+  transplant_5cat_table
+)
+
+
+overall_transplant_5cat_test <- chisq.test(
+  transplant_5cat_table,
+  correct = FALSE
+)
+
+print(
+  overall_transplant_5cat_test
+)
+
+
+# ============================================================
+# 14. Individual Pathway Comparisons
+# Pearson Chi-Square Without Yates Correction
+# ============================================================
+
+transplant_pathway_tests <- bind_rows(
+  lapply(
+    c(
+      "Status 1 Standard",
+      "Status 1 Exception",
+      "Status 2 Standard",
+      "Status 2 Exception",
+      "Statuses 3-6"
+    ),
+    function(pathway_name) {
+      
+      pathway_flag <-
+        transplant_exception_matched$
+        transplant_pathway ==
+        pathway_name
+      
+      test_result <- chisq.test(
+        table(
+          transplant_exception_matched$
+            policy_group,
+          pathway_flag
+        ),
+        correct = FALSE
+      )
+      
+      tibble(
+        transplant_pathway =
+          pathway_name,
+        
+        p_value =
+          test_result$p.value
+      )
+    }
+  )
+)
+
+print(
+  transplant_pathway_tests,
+  n = Inf
+)
+
+
+# ============================================================
+# 15. Monthly Counts for Figure 3
+# ============================================================
+
+monthly_transplant_exception <- transplant_exception_analysis %>%
+  filter(
+    transplant_pathway %in% c(
+      "Status 1 Standard",
+      "Status 1 Exception",
+      "Status 2 Standard",
+      "Status 2 Exception",
+      "Statuses 3-6"
+    )
+  ) %>%
+  mutate(
+    transplant_month =
+      floor_date(
+        TX_DATE,
+        unit = "month"
+      ),
+    
+    transplant_pathway = factor(
+      transplant_pathway,
+      levels = c(
+        "Statuses 3-6",
+        "Status 2 Standard",
+        "Status 2 Exception",
+        "Status 1 Standard",
+        "Status 1 Exception"
+      )
+    )
+  ) %>%
+  count(
+    transplant_month,
+    transplant_pathway,
+    name = "n"
+  ) %>%
+  tidyr::complete(
+    transplant_month = seq(
+      as.Date("2024-09-01"),
+      as.Date("2026-06-01"),
+      by = "1 month"
+    ),
+    transplant_pathway,
+    fill = list(
+      n = 0
+    )
+  )
+
+
+# ============================================================
+# 16. Figure 3
+# ============================================================
+
+monthly_transplant_exception <- monthly_transplant_exception %>%
+  mutate(
+    transplant_pathway = factor(
+      transplant_pathway,
+      levels = c(
+        "Status 1 Standard",
+        "Status 1 Exception",
+        "Status 2 Standard",
+        "Status 2 Exception",
+        "Statuses 3-6"
+      )
+    )
+  )
+
+
+# ------------------------------------------------------------
+# Policy-window midpoints for centered labels
+# ------------------------------------------------------------
+
+pre_policy_midpoint <- as.Date(
+  mean(
+    c(
+      as.numeric(as.Date("2024-09-17")),
+      as.numeric(as.Date("2025-06-30"))
+    )
+  ),
+  origin = "1970-01-01"
+)
+
+post_policy_midpoint <- as.Date(
+  mean(
+    c(
+      as.numeric(as.Date("2025-09-17")),
+      as.numeric(as.Date("2026-06-30"))
+    )
+  ),
+  origin = "1970-01-01"
+)
+
+
+# ------------------------------------------------------------
+# Figure 3
+# ------------------------------------------------------------
+# ------------------------------------------------------------
+# Reorder pathways so that:
+# bottom -> top = Standard Status 1, Status 1 Exception,
+#                 Standard Status 2, Status 2 Exception, Status 3-6
+# and legend left -> right matches the same order
+# ------------------------------------------------------------
+
+monthly_transplant_exception <- monthly_transplant_exception %>%
+  mutate(
+    transplant_pathway = factor(
+      transplant_pathway,
+      levels = c(
+        "Status 1 Standard",
+        "Status 1 Exception",
+        "Status 2 Standard",
+        "Status 2 Exception",
+        "Statuses 3-6"
+      )
+    )
+  )
+
+
+# ------------------------------------------------------------
+# Policy-window midpoints for centered labels
+# ------------------------------------------------------------
+
+pre_policy_midpoint <- as.Date(
+  mean(
+    c(
+      as.numeric(as.Date("2024-09-17")),
+      as.numeric(as.Date("2025-06-30"))
+    )
+  ),
+  origin = "1970-01-01"
+)
+
+post_policy_midpoint <- as.Date(
+  mean(
+    c(
+      as.numeric(as.Date("2025-09-17")),
+      as.numeric(as.Date("2026-06-30"))
+    )
+  ),
+  origin = "1970-01-01"
+)
+
+# ============================================================
+# Figure 3
+# Status at Transplantation Before and After Policy Change
+# ============================================================
+
+figure3_months <- seq(
+  as.Date("2024-09-01"),
+  as.Date("2026-06-01"),
+  by = "1 month"
+)
+
+
+monthly_transplant_exception <- monthly_transplant_exception %>%
+  mutate(
+    month_index =
+      match(
+        transplant_month,
+        figure3_months
+      ),
+
+    transplant_pathway = factor(
+      transplant_pathway,
+      levels = c(
+        "Status 1 Standard",
+        "Status 1 Exception",
+        "Status 2 Standard",
+        "Status 2 Exception",
+        "Statuses 3-6"
+      )
+    )
+  )
+
+
+# ============================================================
+# Policy-window positions on equally spaced month axis
+# ============================================================
+
+pre_policy_midpoint_index <-
+  mean(
+    c(
+      1.5,
+      10.5
+    )
+  )
+
+post_policy_midpoint_index <-
+  mean(
+    c(
+      13.5,
+      22.5
+    )
+  )
+
+
+# ============================================================
+# Plot
+# ============================================================
+
+monthly_transplant_exception_plot <- ggplot(
+  monthly_transplant_exception,
+  aes(
+    x = month_index,
+    y = n,
+    fill = transplant_pathway
+  )
+) +
+
+  # ==========================================================
+  # Pre-policy shaded window
+  # ==========================================================
+
+  annotate(
+    "rect",
+    xmin = 1.5,
+    xmax = 10.5,
+    ymin = -Inf,
+    ymax = Inf,
+    fill = "grey85",
+    alpha = 0.6
+  ) +
+
+  # ==========================================================
+  # Post-policy shaded window
+  # ==========================================================
+
+  annotate(
+    "rect",
+    xmin = 13.5,
+    xmax = 22.5,
+    ymin = -Inf,
+    ymax = Inf,
+    fill = "grey85",
+    alpha = 0.6
+  ) +
+
+  # ==========================================================
+  # Stacked bars
+  # ==========================================================
+
+  geom_col(
+    width = 0.78,
+    position = position_stack(
+      reverse = TRUE
+    )
+  ) +
+
+  # ==========================================================
+  # September 17, 2025 policy-change line
+  # ==========================================================
+
+  geom_vline(
+    aes(
+      xintercept = 13.5,
+      linetype =
+        "September 17, 2025 Policy Change"
+    ),
+    linewidth = 0.8,
+    color = "black"
+  ) +
+
+  # ==========================================================
+  # Policy-period labels
+  # ==========================================================
+
+  annotate(
+    "text",
+    x = pre_policy_midpoint_index,
+    y = 408,
+    label = "Pre-Policy",
+    fontface = "bold",
+    size = 5
+  ) +
+
+  annotate(
+    "text",
+    x = post_policy_midpoint_index,
+    y = 408,
+    label = "Post-Policy",
+    fontface = "bold",
+    size = 5
+  ) +
+
+  # ==========================================================
+  # Bar colors and legend order
+  # ==========================================================
+
+  scale_fill_manual(
+    values = c(
+      "Status 1 Standard" =
+        "#79af97",
+
+      "Status 1 Exception" =
+        "#374e55",
+
+      "Status 2 Standard" =
+        "#D9A15B",
+
+      "Status 2 Exception" =
+        "#ab3435",
+
+      "Statuses 3-6" =
+        "#bdbdbd"
+    ),
+
+    breaks = c(
+      "Status 1 Standard",
+      "Status 1 Exception",
+      "Status 2 Standard",
+      "Status 2 Exception",
+      "Statuses 3-6"
+    ),
+
+    labels = c(
+      "Standard Status 1",
+      "Status 1 Exception",
+      "Standard Status 2",
+      "Status 2 Exception",
+      "Statuses 3-6"
+    )
+  ) +
+
+  # ==========================================================
+  # Policy-line legend
+  # ==========================================================
+
+  scale_linetype_manual(
+    values = c(
+      "September 17, 2025 Policy Change" =
+        "dashed"
+    ),
+    name = NULL
+  ) +
+
+  # ==========================================================
+  # Equally spaced x-axis
+  # ==========================================================
+
+  scale_x_continuous(
+    breaks = seq_along(
+      figure3_months
+    ),
+    labels = format(
+      figure3_months,
+      "%b %Y"
+    ),
+    limits = c(
+      0.5,
+      22.5
+    ),
+    expand = c(
+      0,
+      0
+    )
+  ) +
+
+  # ==========================================================
+  # Plot limits
+  # ==========================================================
+
+  coord_cartesian(
+    ylim = c(
+      0,
+      415
+    ),
+    clip = "off"
+  ) +
+
+  # ==========================================================
+  # Labels
+  # ==========================================================
+
+  labs(
+    x = NULL,
+    y = "Number of Transplants",
+    fill = "Status at Transplant"
+  ) +
+
+  # ==========================================================
+  # Legend order
+  # ==========================================================
+
+  guides(
+    fill = guide_legend(
+      order = 1
+    ),
+
+    linetype = guide_legend(
+      order = 2,
+      override.aes = list(
+        color = "black",
+        linewidth = 0.8
+      )
+    )
+  ) +
+
+  # ==========================================================
+  # Theme
+  # ==========================================================
+
+  theme_classic() +
+
+  theme(
+    axis.text.x =
+      element_text(
+        angle = 45,
+        hjust = 1,
+        size = 13
+      ),
+
+    axis.text.y =
+      element_text(
+        size = 13
+      ),
+
+    axis.title.y =
+      element_text(
+        size = 13
+      ),
+
+    legend.position =
+      "bottom",
+
+    legend.box =
+      "vertical",
+
+    legend.title =
+      element_text(
+        size = 13
+      ),
+
+    legend.text =
+      element_text(
+        size = 13
+      )
+  )
+
+
+print(
+  monthly_transplant_exception_plot
+)
+
+```
+
+``` {r table1}
+
+
+
+table1_data <- study %>%
+  mutate(
+    # ----------------------------------------------------------
+    # Sex
+    # ----------------------------------------------------------
+    sex = case_when(
+      GENDER == "M" ~ "Male",
+      GENDER == "F" ~ "Female",
+      TRUE ~ NA_character_
+    ),
+    sex = factor(
+      sex,
+      levels = c(
+        "Male",
+        "Female"
+      )
+    ),
+
+    # ----------------------------------------------------------
+    # Race / Ethnicity
+    # ----------------------------------------------------------
+    race = case_when(
+      ETHCAT == 1 ~ "White",
+      ETHCAT == 2 ~ "Black",
+      ETHCAT == 4 ~ "Hispanic/Latino",
+      ETHCAT == 5 ~ "Asian",
+      TRUE ~ "Other"
+    ),
+    race = factor(
+      race,
+      levels = c(
+        "White",
+        "Black",
+        "Hispanic/Latino",
+        "Asian",
+        "Other"
+      )
+    ),
+
+    # ----------------------------------------------------------
+    # BMI Category
+    # ----------------------------------------------------------
+    bmi_category = case_when(
+      INIT_BMI_CALC < 18 ~
+        "Underweight",
+
+      INIT_BMI_CALC >= 18 &
+        INIT_BMI_CALC < 25 ~
+        "Normal",
+
+      INIT_BMI_CALC >= 25 &
+        INIT_BMI_CALC < 30 ~
+        "Overweight",
+
+      INIT_BMI_CALC >= 30 ~
+        "Obese",
+
+      TRUE ~
+        "Unknown"
+    ),
+    bmi_category = factor(
+      bmi_category,
+      levels = c(
+        "Normal",
+        "Underweight",
+        "Overweight",
+        "Obese",
+        "Unknown"
+      )
+    ),
+
+    # ----------------------------------------------------------
+    # Blood Type
+    # ----------------------------------------------------------
+    blood_type = case_when(
+      ABO %in% c(
+        "A",
+        "A1",
+        "A2"
+      ) ~ "A",
+
+      ABO %in% c(
+        "AB",
+        "A1B",
+        "A2B"
+      ) ~ "AB",
+
+      ABO == "B" ~
+        "B",
+
+      ABO == "O" ~
+        "O",
+
+      TRUE ~
+        NA_character_
+    ),
+    blood_type = factor(
+      blood_type,
+      levels = c(
+        "O",
+        "A",
+        "B",
+        "AB"
+      )
+    ),
+
+    # ----------------------------------------------------------
+    # Diagnosis
+    # ----------------------------------------------------------
+    diagnosis = case_when(
+      THORACIC_DGN > 999 &
+        THORACIC_DGN < 1007 ~
+        "Dilated Cardiomyopathy, Non-Ischemic",
+
+      THORACIC_DGN == 1007 |
+        THORACIC_DGN == 1200 ~
+        "Ischemic Cardiomyopathy",
+
+      THORACIC_DGN > 1048 &
+        THORACIC_DGN < 1100 ~
+        "Restrictive Cardiomyopathy",
+
+      THORACIC_DGN == 1201 ~
+        "Hypertrophic Cardiomyopathy",
+
+      THORACIC_DGN == 1203 |
+        (
+          THORACIC_DGN >= 1205 &
+            THORACIC_DGN <= 1207
+        ) ~
+        "Congenital Heart Disease",
+
+      THORACIC_DGN >= 1100 &
+        THORACIC_DGN < 1200 ~
+        "Re-Heart Transplant",
+
+      TRUE ~
+        "Other"
+    ),
+    diagnosis = factor(
+      diagnosis,
+      levels = c(
+        "Dilated Cardiomyopathy, Non-Ischemic",
+        "Ischemic Cardiomyopathy",
+        "Restrictive Cardiomyopathy",
+        "Hypertrophic Cardiomyopathy",
+        "Congenital Heart Disease",
+        "Re-Heart Transplant",
+        "Other"
+      )
+    ),
+
+    # ----------------------------------------------------------
+    # Initial Listing Status
+    # ----------------------------------------------------------
+    initial_status = factor(
+      INIT_STAT,
+      levels = c(
+        2110,
+        2120,
+        2130,
+        2140,
+        2150,
+        2160,
+        2999
+      ),
+      labels = c(
+        "Status 1",
+        "Status 2",
+        "Status 3",
+        "Status 4",
+        "Status 5",
+        "Status 6",
+        "Temporarily Inactive"
+      )
+    )
+  )
+
+
+# ============================================================
+# Build Table 1
+# ============================================================
+
+table1 <- table1_data %>%
+  select(
+    policy_group,
+    INIT_AGE,
+    sex,
+    race,
+    bmi_category,
+    blood_type,
+    diagnosis,
+    initial_status
+  ) %>%
+  tbl_summary(
+    by = policy_group,
+    statistic = list(
+      INIT_AGE ~
+        "{median} ({p25}, {p75})",
+
+      all_categorical() ~
+        "{n} ({p}%)"
+    ),
+    digits = list(
+      INIT_AGE ~
+        1,
+
+      all_categorical() ~
+        c(
+          0,
+          1
+        )
+    ),
+    missing = "no",
+    label = list(
+      INIT_AGE ~
+        "Age at Listing (Years)",
+
+      sex ~
+        "Sex",
+
+      race ~
+        "Race/Ethnicity",
+
+      bmi_category ~
+        "Body Mass Index",
+
+      blood_type ~
+        "Blood Type",
+
+      diagnosis ~
+        "Diagnosis",
+
+      initial_status ~
+        "Initial Listing Status"
+    )
+  ) %>%
+
+  add_p(
+    test = list(
+      INIT_AGE ~
+        "wilcox.test",
+
+      all_categorical() ~
+        "chisq.test"
+    ),
+    pvalue_fun = function(x) {
+      gtsummary::style_pvalue(
+        x,
+        digits = 2
+      )
+    }
+  ) %>%
+
+  modify_header(
+    label ~
+      "**Characteristic**",
+
+    stat_1 ~
+      "**Pre-Policy**  \nN = {n}",
+
+    stat_2 ~
+      "**Post-Policy**  \nN = {n}",
+
+    p.value ~
+      "**P Value**"
+  ) %>%
+
+  modify_caption(
+    "**Table 1. Characteristics of Adult Heart Transplant Candidates Before and After the September 17, 2025 Policy Change**"
+  ) %>%
+
+  bold_labels()
+
+
+table1
+
+
+```
